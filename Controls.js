@@ -26,6 +26,13 @@ function workspaceName(client, allowSpecial) {
   return name
 }
 
+// Hyprland assigns these. Anything else must not be pasted into a dispatch.
+function safeAddress(address) {
+  if (typeof address !== "string") return ""
+  if (!/^0x[0-9a-fA-F]+$/.test(address)) return ""
+  return address
+}
+
 function windowLabel(client) {
   var title = client && client.title ? String(client.title).replace(/\s+/g, " ").trim() : ""
   var klass = client && client.class ? String(client.class).trim() : ""

@@ -64,36 +64,45 @@ Item {
     homes = next
   }
 
-  function windowArg(address) {
-    return "window = \"address:" + address + "\""
-  }
-
   function dispatch(expr) {
     Hyprland.dispatch(expr)
   }
 
+  // One place builds the compositor command, and only a real window address gets in.
+  function dispatchWindow(address, prefix) {
+    var safe = Controls.safeAddress(address)
+    if (!safe) return
+    dispatch(prefix + "window = \"address:" + safe + "\" })")
+  }
+
   function closeWindow(address) {
-    dispatch("hl.dsp.window.close({ " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.close({ ")
   }
 
   function toggleMaximized(address) {
-    dispatch("hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\", layout_aware = false, " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\", layout_aware = false, ")
   }
 
   function unsetFullscreen(address) {
-    dispatch("hl.dsp.window.fullscreen({ action = \"unset\", layout_aware = false, " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.fullscreen({ action = \"unset\", layout_aware = false, ")
   }
 
   function floatOn(address) {
-    dispatch("hl.dsp.window.float({ action = \"on\", " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.float({ action = \"on\", ")
   }
 
   function moveTo(address, x, y) {
-    dispatch("hl.dsp.window.move({ x = " + Math.round(x) + ", y = " + Math.round(y) + ", relative = false, " + windowArg(address) + " })")
+    x = Math.round(x)
+    y = Math.round(y)
+    if (!isFinite(x) || !isFinite(y)) return
+    dispatchWindow(address, "hl.dsp.window.move({ x = " + x + ", y = " + y + ", relative = false, ")
   }
 
   function resizeTo(address, w, h) {
-    dispatch("hl.dsp.window.resize({ x = " + Math.round(w) + ", y = " + Math.round(h) + ", relative = false, " + windowArg(address) + " })")
+    w = Math.round(w)
+    h = Math.round(h)
+    if (!isFinite(w) || !isFinite(h)) return
+    dispatchWindow(address, "hl.dsp.window.resize({ x = " + w + ", y = " + h + ", relative = false, ")
   }
 
   function resizeWindow(address, x, y, w, h) {
@@ -104,7 +113,7 @@ Item {
   // Omarchy's scratchpad is the minimize shelf. The bottom chip opens it again.
   function minimizeWindow(address) {
     rememberHome(address, workspaceOf(address))
-    dispatch("hl.dsp.window.move({ workspace = \"special:scratchpad\", follow = false, " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.move({ workspace = \"special:scratchpad\", follow = false, ")
   }
 
   function restoreWindow(address) {
@@ -114,8 +123,9 @@ Item {
         if (minimized[i].address === address) workspace = minimized[i].fallback
       }
     }
+    workspace = Controls.workspaceName({ workspace: workspace })
     if (!workspace) return
-    dispatch("hl.dsp.window.move({ workspace = \"" + workspace + "\", follow = true, " + windowArg(address) + " })")
+    dispatchWindow(address, "hl.dsp.window.move({ workspace = \"" + workspace + "\", follow = true, ")
   }
 
   function placeBox(address, box) {

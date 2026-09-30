@@ -2,7 +2,7 @@ const fs = require("fs")
 const path = require("path")
 
 const src = fs.readFileSync(path.join(__dirname, "Controls.js"), "utf8").replace(/^\.pragma library\s*/, "")
-const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, windowLabel }")()
+const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel }")()
 
 function assert(cond, message) {
   if (!cond) throw new Error(message)
@@ -15,6 +15,9 @@ assert(api.onShelf({ mapped: true, workspace: { name: "special:scratchpad" } }) 
 assert(api.onShelf({ mapped: true, workspace: { name: "5" } }) === false, "normal workspace is not the shelf")
 assert(api.workspaceName({ workspace: { name: "5" } }) === "5", "home workspace")
 assert(api.workspaceName({ workspace: { name: "special:scratchpad" } }) === "", "shelf is not a home")
+assert(api.workspaceName({ workspace: { name: "5\" })" } }) === "", "workspace cannot break out of the command")
+assert(api.safeAddress("0x5a5f88b02ce0") === "0x5a5f88b02ce0", "hex window address")
+assert(api.safeAddress("0x5a5f88b02ce0\" })") === "", "address cannot break out of the command")
 assert(api.windowLabel({ title: "Notes", class: "org.notes" }) === "Notes", "title is the chip label")
 assert(api.showable({ mapped: true, hidden: false, visible: true, size: [20, 20] }) === false, "tiny window")
 
