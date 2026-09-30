@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "li.window-controls",
+  "name": "Window Controls",
+  "version": "1.0.0",
+  "author": "li",
+  "description": "Corner buttons to move, resize, minimize, restore, maximize, and close a window.",
+  "kinds": ["panel"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml"
+  }
+}
