@@ -756,6 +756,7 @@ Item {
                 anchors.rightMargin: 8
                 verticalAlignment: Text.AlignVCenter
                 text: shelfItem.geom.title
+                textFormat: Text.PlainText
                 color: "#f2f2f2"
                 font.pixelSize: 12
                 elide: Text.ElideRight
