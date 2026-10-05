@@ -69,6 +69,14 @@ function parseSnapshot(text) {
         throw new Error("Window snapshot " + name + "[" + index + "] must be an object")
     }
   }
+  if (Object.prototype.hasOwnProperty.call(value, "activeWindow")) {
+    var active = value.activeWindow
+    if (!active || typeof active !== "object" || Array.isArray(active))
+      throw new Error("Window snapshot activeWindow must be an object")
+    if (Object.prototype.hasOwnProperty.call(active, "address") &&
+        (typeof active.address !== "string" || (active.address !== "" && !safeAddress(active.address))))
+      throw new Error("Window snapshot activeWindow address must be empty or a valid window address")
+  }
   return value
 }
 

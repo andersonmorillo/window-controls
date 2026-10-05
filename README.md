@@ -1,6 +1,6 @@
 # Window Controls
 
-Corner buttons for Omarchy windows. Drag a window from the grip, resize it from the bottom-right handle, and snap it by dropping it on a corner or a side. Minimize hides the window and shows a restore button inside the existing status bar, alongside the workspace buttons and clock.
+Corner buttons for Omarchy windows. Drag a window from the grip, resize it from the bottom-right handle, and snap it by dropping it on a corner or a side. The status bar lists open windows alongside the workspace buttons and clock, including minimized windows and windows on other workspaces.
 
 ## Behavior
 
@@ -9,7 +9,7 @@ Corner buttons for Omarchy windows. Drag a window from the grip, resize it from 
 - A drag or resize starts after the pointer moves at least four logical pixels. Clicking the resize handle alone does not change the window's layout.
 - Minimized windows use `special:li-window-controls`. Other special workspaces remain independent.
 - Original workspaces are saved outside the plugin directory and restored after plugin reloads or shell restarts. Saved records are checked against live window identities.
-- Controls have no fixed window-count limit. Minimized windows appear on their monitor's status bar, with pages when more titles exist than fit. The widget uses the bar's theme and stays compact to leave room for the clock and other widgets.
+- Controls have no fixed window-count limit. Open windows appear on their monitor's status bar, with pages when more titles exist than fit. Click a title to focus it or restore it to its original workspace. Click its separate square button to maximize it; minimized windows restore before maximizing. The focused window is highlighted. The widget uses the bar's theme and stays compact to leave room for the clock and other widgets.
 - Button presses retain their original window target. Controls that would obstruct a foreground window are suppressed using the compositor's focus and window-state information.
 - Full-title and action tooltips describe the controls. Compact controls fit smaller windows.
 
@@ -34,7 +34,7 @@ omarchy plugin enable li.window-controls --after omarchy.workspaces
 
 Restore metadata survives this change. Local source edits trigger a plugin refresh. If status still reports the previous version, run `omarchy restart shell` to clear cached QML.
 
-Place the minimized-window widget after the workspace buttons:
+Place the open-window widget after the workspace buttons:
 
 ```bash
 omarchy bar put li.window-controls --after omarchy.workspaces
@@ -72,7 +72,7 @@ hyprctl monitors -j
 omarchy-shell shell call li.window-controls status ''
 ```
 
-Cover fractional scaling, mixed-monitor drag and snapping, 13 or more windows, shelf overflow, overlapping windows, canceled gestures, and minimize → reload → restore. Store captures outside the live plugin folder, since its file watcher reloads code on changes.
+Cover fractional scaling, mixed-monitor drag and snapping, 13 or more windows, shelf overflow, overlapping windows, canceled gestures, inactive workspace selection, bar maximization, and minimize → reload → restore. Store captures outside the live plugin folder, since its file watcher reloads code on changes.
 
 The status call reports polling failures and snapshot age as well as control positions. Invalid snapshots never replace the last valid state, and stale controls stop taking input if updates cannot recover.
 

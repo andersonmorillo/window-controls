@@ -90,6 +90,30 @@ ShellRoot {
 
     function load() { check(panel.ingest(JSON.stringify(data)), "valid snapshot rejected: " + panel.lastError); }
 
+    function fixtureClient(address) {
+        for (var i = 0; i < data.clients.length; i++) if (data.clients[i].address === address) return data.clients[i];
+        throw new Error("Missing fixture client " + address);
+    }
+
+    function windowIdentity(address) {
+        for (var i = 0; i < bridge.windows.length; i++) if (bridge.windows[i].address === address) return bridge.windows[i].stableId;
+        throw new Error("Missing bar window " + address);
+    }
+
+    function maximizeCommands() {
+        return panel.testCommands.filter(function(command) { return command.indexOf("window.fullscreen") >= 0; });
+    }
+
+    function checkExplicitMaximize(address, count) {
+        var commands = maximizeCommands();
+        check(commands.length === count, "expected " + count + " maximize commands for " + address + ", got " + commands.length);
+        check(commands.every(function(command) {
+            return command.indexOf("address:" + address) >= 0
+                && command.indexOf('mode = "maximized"') >= 0
+                && command.indexOf('action = "set"') >= 0;
+        }), "bar maximize toggled or targeted a different window");
+    }
+
     function run() {
         var target, identity, before, row, surface;
         if (phase === 0) {
@@ -100,8 +124,34 @@ ShellRoot {
                 width: 800, height: 600, scale: 1, transform: 0, reserved: [0, 32, 0, 0],
                 activeWorkspace: { id: 1, name: "dev team" } }] };
             for (var i = 0; i < 15; i++) data.clients.push(windowClient(i, false));
+            data.activeWindow = { address: "0x1000" };
             load();
             check(panel.rows.length === 15, "window count capped");
+            check(Array.isArray(panel.windows) && panel.windows.length === 15,
+                "bar window model must include all fifteen open normal windows");
+            var focusedWindows = panel.windows.filter(function(window) { return window.focused; });
+            check(focusedWindows.length === 1 && focusedWindows[0].address === "0x1000",
+                "authoritative activeWindow must mark the focused window when the native binding is unavailable");
+            data.activeWindow = {};
+            load();
+            check(panel.windows.every(function(window) { return window.focused === false; }),
+                "explicit no-focus snapshot must override a client's focusHistoryID zero");
+            var focusRows = panel.rows;
+            var focusWindows = panel.windows;
+            var focusSnapshot = panel.snapshot;
+            var focusTimestamp = panel.lastValidAt;
+            var focusFresh = panel.fresh;
+            [null, []].forEach(function(invalidActiveWindow) {
+                var invalidFocus = Object.assign({}, data, { activeWindow: invalidActiveWindow });
+                check(panel.ingest(JSON.stringify(invalidFocus)) === false,
+                    "malformed activeWindow was accepted");
+                check(panel.rows === focusRows && panel.windows === focusWindows && panel.snapshot === focusSnapshot
+                    && panel.lastValidAt === focusTimestamp && panel.fresh === focusFresh,
+                    "malformed focus snapshot replaced valid geometry, windows, or freshness");
+            });
+            data.activeWindow = { address: "0x1000" };
+            load();
+            delete data.activeWindow;
         } else if (phase === 1) {
             check(panel.surfaces.length >= 1, "overlay not instantiated");
             surface = panel.surfaces[0];
@@ -230,11 +280,32 @@ ShellRoot {
                 if (b >= 21) barClient.monitor = 1;
                 data.clients.push(barClient);
             }
+            var activeNormal = windowClient(100, false);
+            activeNormal.at = [12, 44];
+            var inactiveNormal = windowClient(101, false);
+            inactiveNormal.visible = false;
+            inactiveNormal.workspace = { name: "qa inactive" };
+            var maximizedNormal = windowClient(102, false);
+            maximizedNormal.fullscreen = 1;
+            maximizedNormal.at = [180, 44];
+            data.clients.push(activeNormal, inactiveNormal, maximizedNormal);
+            data.activeWindow = { address: activeNormal.address };
             // The host assigns the controller's service after construction.
             panel.service = bridge;
             load();
             check(bridge.controller === panel, "late service injection did not attach the controller");
             check(bridge.minimized.length === 28 && bridge.fresh, "bridge did not mirror controller state");
+            check(bridge.windows.length === 31, "bridge omitted normal or inactive-workspace windows");
+            check(panel.rows.every(function(row) { return row.address !== inactiveNormal.address; }),
+                "inactive workspace unexpectedly received corner controls");
+            var inactiveMetadata = bridge.windows.filter(function(entry) { return entry.address === inactiveNormal.address; })[0];
+            check(inactiveMetadata && inactiveMetadata.workspace === "qa inactive" && inactiveMetadata.minimized === false,
+                "all-window model lost inactive workspace metadata");
+            check(typeof inactiveMetadata.focused === "boolean" && typeof inactiveMetadata.fullscreen === "number",
+                "bar metadata is missing focus or fullscreen state");
+            var activeMetadata = bridge.windows.filter(function(window) { return window.focused; });
+            check(activeMetadata.length === 1 && activeMetadata[0].address === activeNormal.address,
+                "all-window metadata did not select the authoritative normal window");
             bridge.detachController(fakeShell);
             check(bridge.controller === panel, "unrelated teardown cleared the active controller");
             primaryBarLoader.active = true;
@@ -249,7 +320,13 @@ ShellRoot {
             var widget = primaryBarLoader.item;
             check(widget.service === bridge, "late scoped service lookup did not rebind");
             check(panel.barHosted(screenName) && !panel.barHosted("qa-other"), "bar ownership leaked across monitors");
-            check(widget.allAddresses.length === 21, "primary bar did not filter by monitor");
+            check(widget.allAddresses.length === 24, "primary bar omitted normal windows or did not filter by monitor");
+            check(["0x1064", "0x1065", "0x1066"].every(function(address) { return widget.allAddresses.indexOf(address) >= 0; }),
+                "normal and inactive-workspace windows are missing from the bar");
+            check(widget.allAddresses.every(function(address) {
+                var titleButton = widget.buttonFor(address);
+                return titleButton !== null && titleButton.activeWindow === (address === "0x1064");
+            }), "bar focus indicators do not match authoritative window metadata");
             check(widget.layout.pages > 1 && widget.diagnosticAddresses.length > 0, "native bar overflow lacks visible pagination");
             check(widget.implicitWidth <= 240 && widget.implicitHeight <= fakeBar.barSize, "bar widget exceeds its configured width or bar height");
             var fallbackStatus = JSON.parse(panel.status()).chips;
@@ -264,14 +341,18 @@ ShellRoot {
             check(rendered.length > 0, "bar page renders no restore buttons");
             for (var renderedIndex = 0; renderedIndex < rendered.length; renderedIndex++) {
                 var renderedButton = pagedWidget.buttonFor(rendered[renderedIndex]);
-                check(renderedButton !== null, "bar diagnostic address has no rendered button");
+                var renderedMaximize = pagedWidget.maximizeButtonFor(rendered[renderedIndex]);
+                check(renderedButton !== null && renderedMaximize !== null, "bar entry is missing its title or maximize button");
+                check(renderedButton.activeWindow === (rendered[renderedIndex] === "0x1064"),
+                    "rendered bar page shows an incorrect focused-window marker");
                 check(renderedButton.width > 0 && renderedButton.height > 0, "rendered restore button has empty geometry");
+                check(renderedMaximize.width > 0 && renderedMaximize.height > 0, "rendered maximize button has empty geometry");
                 check(renderedButton.x >= 0 && renderedButton.x + renderedButton.width <= pagedWidget.width,
                     "restore button extends past the bar widget");
                 seenBarChips[rendered[renderedIndex]] = true;
             }
             if (pagedWidget.page + 1 < pagedWidget.layout.pages) { pagedWidget.nextPage(); return; }
-            check(Object.keys(seenBarChips).length === 21, "native bar pages leave minimized windows unreachable");
+            check(Object.keys(seenBarChips).length === 24, "native bar pages leave open windows unreachable");
             secondaryBarLoader.active = true;
         } else if (phase === 10) {
             load();
@@ -281,7 +362,9 @@ ShellRoot {
                 "native bar restoration models overlap monitors");
             check(panel.barHosted("qa-other"), "second bar did not suppress its fallback");
             check(bridge.widgets.length === 2, "widget registration was duplicated or lost");
-            check(fakeBar.clickTargets.length === 32, "host click-target registration is incomplete or duplicated");
+            check(fakeBar.clickTargets.length === 66, "each open window must register title and maximize targets");
+            primaryBarLoader.item.page = 0;
+        } else if (phase === 11) {
             pressedBarAddress = primaryBarLoader.item.pageAddress(0);
             pressedBarButton = primaryBarLoader.item.buttonFor(pressedBarAddress);
             check(pressedBarButton !== null, "pressed restore button missing");
@@ -291,11 +374,11 @@ ShellRoot {
             }
             panel.testCommands = [];
             load();
-        } else if (phase === 11) {
+        } else if (phase === 12) {
             check(pressedBarButton !== null, "identity update unexpectedly destroyed the address delegate");
             pressedBarButton.releasePress(true);
             check(panel.testCommands.length === 0, "bar restore accepted the identity replaced during its press");
-        } else if (phase === 12) {
+        } else if (phase === 13) {
             // Target thawing runs through Qt.callLater after release. Let the
             // next event turn supply current metadata for a new press.
             var currentButton = primaryBarLoader.item.buttonFor(pressedBarAddress);
@@ -305,25 +388,152 @@ ShellRoot {
                 "host-forwarded bar restore did not route through the controller");
             currentButton.triggerPress(Qt.RightButton);
             check(panel.testCommands.length === 1, "unsupported host mouse button dispatched restoration");
+        } else if (phase === 14) {
+            load();
+            panel.testCommands = [];
+            primaryBarLoader.item.buttonFor("0x1064").triggerPress(Qt.LeftButton);
+            primaryBarLoader.item.buttonFor("0x1065").triggerPress(Qt.LeftButton);
+            check(panel.testCommands.length === 2 && panel.testCommands.every(function(command) {
+                return command.indexOf("hl.dsp.focus(") >= 0;
+            }), "normal and inactive-workspace titles must focus their windows");
+            panel.testCommands = [];
+            var normalMaximize = primaryBarLoader.item.maximizeButtonFor("0x1066");
+            check(fakeBar.clickTargets.indexOf(normalMaximize) >= 0, "maximize affordance is not registered with the host");
+            normalMaximize.triggerPress(Qt.LeftButton);
+            normalMaximize.triggerPress(Qt.LeftButton);
+            checkExplicitMaximize("0x1066", 2);
+            check(panel.testCommands.filter(function(command) { return command.indexOf("hl.dsp.focus(") >= 0; }).length === 2,
+                "maximize did not focus the selected normal window");
+            panel.testCommands = [];
+            pressedBarButton = primaryBarLoader.item.maximizeButtonFor("0x1064");
+            pressedBarButton.capturePress();
+            fixtureClient("0x1064").stableId = "replacement-during-maximize-press";
+            load();
+        } else if (phase === 15) {
+            pressedBarButton.releasePress(true);
+            check(panel.testCommands.length === 0, "maximize accepted an identity replaced during its press");
+            // Remember a real home through the controller before exercising
+            // restore confirmation alongside an authoritative focus change.
+            fixtureClient("0x1001").workspace = { name: "dev team" };
+            fixtureClient("0x1001").visible = true;
+            load();
+            panel.minimizeWindow("0x1001");
+            check(panel.homes["0x1001"] && panel.homes["0x1001"].workspace === "dev team",
+                "restore interaction fixture did not remember its original workspace");
+            fixtureClient("0x1001").workspace = { name: "special:li-window-controls" };
+            fixtureClient("0x1001").visible = false;
+            load();
+            panel.testCommands = [];
+            primaryBarLoader.item.buttonFor("0x1001").triggerPress(Qt.LeftButton);
+            check(panel.testCommands.length === 1 && panel.testCommands[0].indexOf('workspace = "dev team"') >= 0
+                && panel.testCommands[0].indexOf("follow = true") >= 0, "minimized title did not restore its original workspace");
+            panel.testCommands = [];
+            primaryBarLoader.item.maximizeButtonFor("0x1001").triggerPress(Qt.LeftButton);
+            check(panel.testCommands.length === 1 && panel.testCommands[0].indexOf('workspace = "dev team"') >= 0,
+                "minimized maximize did not begin by restoring");
+            checkExplicitMaximize("0x1001", 0);
+            check(panel.pendingRestores["0x1001"] && panel.pendingRestores["0x1001"].maximize === true,
+                "minimized maximize was not queued for restore confirmation");
+        } else if (phase === 16) {
+            panel.testCommands = [];
+            load();
+            checkExplicitMaximize("0x1001", 0);
+            fixtureClient("0x1001").workspace = { name: "special:unrelated" };
+            load();
+            checkExplicitMaximize("0x1001", 0);
+            check(panel.pendingRestores["0x1001"] && panel.pendingRestores["0x1001"].maximize,
+                "restore confirmation was inferred from the wrong workspace");
+        } else if (phase === 17) {
+            fixtureClient("0x1001").workspace = { name: "dev team" };
+            fixtureClient("0x1001").visible = true;
+            data.activeWindow = { address: "0x1001" };
+            panel.pollExpired = true;
+            load();
+            check(panel.fresh && panel.focusedAddress === "0x1001", "valid restore snapshot did not recover freshness and focus");
+            checkExplicitMaximize("0x1001", 1);
+            check(panel.testCommands.some(function(command) { return command.indexOf("hl.dsp.focus(") >= 0; }),
+                "confirmed minimized maximize did not focus its restored window");
+            check(!panel.pendingRestores["0x1001"], "confirmed maximize retained its pending request");
+            check(!panel.homes["0x1001"], "focus change resurrected a confirmed restore's old home metadata");
+        } else if (phase === 18) {
+            panel.testCommands = [];
+            bridge.maximize("0x1002", windowIdentity("0x1002"));
+            fixtureClient("0x1002").mapped = false;
+            load();
+            checkExplicitMaximize("0x1002", 0);
+            check(!panel.pendingRestores["0x1002"], "unmapped window retained a queued maximize");
+            fixtureClient("0x1002").mapped = true;
+            fixtureClient("0x1002").stableId = "new-window-after-unmap";
+            load();
+        } else if (phase === 19) {
+            panel.testCommands = [];
+            bridge.maximize("0x1003", windowIdentity("0x1003"));
+            fixtureClient("0x1003").stableId = "new-native-after-queued-maximize";
+            load();
+            check(!panel.pendingRestores["0x1003"], "reused native identity retained a queued maximize");
+            fixtureClient("0x1003").workspace = { name: "dev team" };
+            fixtureClient("0x1003").visible = true;
+            load();
+            checkExplicitMaximize("0x1003", 0);
+        } else if (phase === 20) {
+            panel.testCommands = [];
+            bridge.maximize("0x1004", windowIdentity("0x1004"));
+            panel.retireAddress("1004");
+            load();
+            fixtureClient("0x1004").workspace = { name: "dev team" };
+            fixtureClient("0x1004").visible = true;
+            load();
+            checkExplicitMaximize("0x1004", 0);
+            check(!panel.pendingRestores["0x1004"], "native close event retained a queued maximize");
+        } else if (phase === 21) {
+            panel.testCommands = [];
+            bridge.maximize("0x1006", windowIdentity("0x1006"));
+            check(panel.pendingRestores["0x1006"], "timeout fixture was not queued");
+            panel.pendingRestores["0x1006"].requestedAt = Date.now() - 6000;
+            load();
+            fixtureClient("0x1006").workspace = { name: "dev team" };
+            fixtureClient("0x1006").visible = true;
+            load();
+            checkExplicitMaximize("0x1006", 0);
+            check(!panel.pendingRestores["0x1006"], "expired maximize applied after a delayed restoration");
+        } else if (phase === 22) {
+            panel.testCommands = [];
+            bridge.maximize("0x1007", windowIdentity("0x1007"));
+            bridge.activateWindow("0x1007", windowIdentity("0x1007"));
+            fixtureClient("0x1007").workspace = { name: "dev team" };
+            fixtureClient("0x1007").visible = true;
+            load();
+            checkExplicitMaximize("0x1007", 0);
+            check(!panel.pendingRestores["0x1007"], "new title action left an older maximize queued");
+        } else if (phase === 23) {
+            panel.testCommands = [];
+            bridge.maximize("0x1005", windowIdentity("0x1005"));
+            panel.close();
+            fixtureClient("0x1005").workspace = { name: "dev team" };
+            fixtureClient("0x1005").visible = true;
+            load();
+            checkExplicitMaximize("0x1005", 0);
+            check(!panel.pendingRestores["0x1005"], "closed controller retained a queued maximize");
             primaryBarLoader.active = false;
-        } else if (phase === 13) {
+        } else if (phase === 24) {
             check(bridge.widgets.length === 1, "destroyed native bar retained its service registration");
-            check(fakeBar.clickTargets.length === 9, "destroyed bar retained host click targets");
+            check(fakeBar.clickTargets.length === 16, "destroyed bar retained host click targets");
             check(!panel.barHosted(screenName) && panel.barHosted("qa-other"), "bar removal did not restore only its own fallback");
             check(JSON.parse(panel.status()).chips.some(function(chip) { return chip.screen === screenName && chip.visible; }),
                 "bar removal left primary minimized windows inaccessible");
             panel.service = null;
-            check(bridge.controller === null && !bridge.fresh && bridge.minimized.length === 0, "controller teardown left bridge state live");
-        } else if (phase === 14) {
+            check(bridge.controller === null && !bridge.fresh && bridge.minimized.length === 0 && bridge.windows.length === 0,
+                "controller teardown left bridge state live");
+        } else if (phase === 25) {
             panel.service = bridge;
             load();
-            check(bridge.controller === panel && bridge.minimized.length === 28, "retained bridge did not accept a replacement controller attachment");
+            check(bridge.controller === panel && bridge.windows.length === 31, "retained bridge did not accept a replacement controller attachment");
             secondaryBarLoader.active = false;
-        } else if (phase === 15) {
+        } else if (phase === 26) {
             check(bridge.widgets.length === 0 && bridge.hostedScreens.length === 0, "bar teardown leaked hosted screens");
             check(fakeBar.clickTargets.length === 0, "bar teardown leaked host click targets");
             check(!panel.barHosted(screenName) && !panel.barHosted("qa-other"), "empty service still suppresses restoration fallbacks");
-            console.log("window-controls QML smoke passed: masks, stable delegates, gestures, identities, restore, pagination, freshness, native bar bridge and lifecycle");
+            console.log("window-controls QML smoke passed: masks, gestures, identities, all-window bar, focus, explicit maximize, restore confirmation, queued-action cancellation and lifecycle");
             Qt.quit();
         }
         phase++;

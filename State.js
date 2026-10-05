@@ -265,7 +265,7 @@ function buildSnapshot(snapshot, screens, homes, options) {
   var chipW = positive(options.chipW, 104), chipH = positive(options.chipH, 24)
   var shelfGap = positive(options.shelfGap, 8)
   var shelfAnchor = options.shelfAnchor === "bottom" ? "bottom" : "top"
-  var rows = [], minimized = [], foreground = [], seen = {}, shelves = Object.create(null)
+  var rows = [], windows = [], minimized = [], foreground = [], seen = {}, shelves = Object.create(null)
 
   for (var c = 0; c < clients.length; c++) {
     var client = clients[c]
@@ -273,6 +273,21 @@ function buildSnapshot(snapshot, screens, homes, options) {
     if (!address || seen[address]) continue
     seen[address] = true
     var minimizedClient = isMinimized(client, kept)
+    var workspace = Controls.workspaceName(client, true)
+    // Bar entries describe every mapped normal window, including inactive
+    // workspaces. Corner overlays below retain their own visibility rules.
+    if (client.mapped === true && (minimizedClient || workspace.indexOf("special:") !== 0)) {
+      var barDestination = shelfDestination(client, kept[address], monitors, screens)
+      var window = metadata(client)
+      window.screenName = barDestination.screen ? barDestination.screen.name : ""
+      window.monitorName = barDestination.monitor ? barDestination.monitor.name : ""
+      window.workspace = workspace
+      window.minimized = minimizedClient
+      window.fullscreen = Number(client.fullscreen) || 0
+      window.focused = address === options.focusedAddress
+      window.fallback = Controls.workspaceName({ workspace: barDestination.monitor && barDestination.monitor.activeWorkspace })
+      windows.push(window)
+    }
     if (minimizedClient) {
       var destination = shelfDestination(client, kept[address], monitors, screens)
       var chip = metadata(client)
@@ -340,6 +355,11 @@ function buildSnapshot(snapshot, screens, homes, options) {
     return stacking ? -stacking : (a.address < b.address ? -1 : a.address > b.address ? 1 : 0)
   })
   minimized.sort(function(a, b) { return a.address < b.address ? -1 : a.address > b.address ? 1 : 0 })
+  // Focus changes update the highlight without moving a button under a press.
+  windows.sort(function(a, b) {
+    if (a.screenName !== b.screenName) return a.screenName < b.screenName ? -1 : 1
+    return a.address < b.address ? -1 : a.address > b.address ? 1 : 0
+  })
 
   for (var s = 0; s < screens.length; s++) {
     var shelfScreen = screens[s]
@@ -368,5 +388,5 @@ function buildSnapshot(snapshot, screens, homes, options) {
       }
     }
   }
-  return { rows: rows, minimized: minimized, homes: kept, monitors: monitors, clients: clients, shelves: shelves }
+  return { rows: rows, windows: windows, minimized: minimized, homes: kept, monitors: monitors, clients: clients, shelves: shelves }
 }

@@ -26,6 +26,7 @@ Item {
     property var testNativeToplevels: []
     property var rows: []
     property var minimized: []
+    property var windows: []
     property var homes: ({})
     property var shelves: ({})
     property var monitors: []
@@ -55,7 +56,11 @@ Item {
     readonly property int grip: 18
     readonly property var layoutScreens: testMode && testScreens.length ? testScreens : Quickshell.screens
     readonly property bool fresh: !pollExpired && lastValidAt > 0 && clockNow - lastValidAt < 3000
-    readonly property string focusedAddress: Hyprland.activeToplevel ? nativeAddress(Hyprland.activeToplevel.address) : ""
+    readonly property string nativeFocusedAddress: Hyprland.activeToplevel ? nativeAddress(Hyprland.activeToplevel.address) : ""
+    // Native activation can be unavailable even when native windows are mapped.
+    // An explicitly empty active-window snapshot clears the previous highlight.
+    readonly property string focusedAddress: snapshot && snapshot.activeWindow !== undefined
+        ? nativeAddress(snapshot.activeWindow.address) : nativeFocusedAddress
     readonly property var emptyGeom: ({ address: "", x: 0, y: 0, w: 0, h: 0, chromeVisible: false, handleVisible: false })
 
     PersistentProperties {
@@ -113,17 +118,19 @@ Item {
 
     function close() {
         opened = false;
+        pendingRestores = ({});
         cancelGesture();
         eventRefresh.stop();
         refreshQueued = false;
     }
 
     function status() {
-        return JSON.stringify({ version: "1.2.0", windows: rows.length, minimized: minimized.length,
+        return JSON.stringify({ version: "1.3.0", windows: windows.length, minimized: minimized.length,
             shelves: shelves, poll: lastPoll, error: lastError,
             barWidgets: sharedService ? sharedService.widgetStatus() : [],
             validAgeMs: lastValidAt ? Math.max(0, Date.now() - lastValidAt) : null,
-            fresh: fresh, gesture: gesture ? { address: gesture.address, kind: gesture.kind, moved: gesture.moved } : null,
+            fresh: fresh, focusedAddress: focusedAddress,
+            gesture: gesture ? { address: gesture.address, kind: gesture.kind, moved: gesture.moved } : null,
             controls: rows.map(function(row) { return { address: row.address, screen: row.screenName,
                 chrome: { visible: row.chromeVisible && fresh, x: row.x, y: row.y, w: row.w, h: row.h },
                 handle: { visible: row.handleVisible && fresh, x: row.handleX, y: row.handleY, w: row.handleW, h: row.handleH } }; }),
@@ -159,6 +166,7 @@ Item {
         var client = clientFor(address);
         next[address] = client ? WindowState.clientIdentity(client) : "";
         retiredAddresses = next;
+        cancelRestore(address);
         if (gesture && gesture.address.toLowerCase() === address) cancelGesture();
     }
 
@@ -200,7 +208,9 @@ Item {
         dispatch(prefix + "window = " + Controls.luaString("address:" + address) + " })");
     }
 
-    function closeWindow(address) { dispatchWindow(address, "hl.dsp.window.close({ "); }
+    function closeWindow(address) { cancelRestore(address); dispatchWindow(address, "hl.dsp.window.close({ "); }
+    function focusWindow(address) { dispatchWindow(address, "hl.dsp.focus({ "); }
+    function setMaximized(address) { dispatchWindow(address, 'hl.dsp.window.fullscreen({ mode = "maximized", action = "set", layout_aware = false, '); }
     function toggleMaximized(address) { dispatchWindow(address, 'hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle", layout_aware = false, '); }
     function unsetFullscreen(address) { dispatchWindow(address, 'hl.dsp.window.fullscreen({ action = "unset", layout_aware = false, '); }
     function floatOn(address) { dispatchWindow(address, 'hl.dsp.window.float({ action = "on", '); }
@@ -225,19 +235,51 @@ Item {
     function minimizeWindow(address) {
         var client = clientFor(address);
         if (!isLive(address, "") || !client) return;
+        cancelRestore(address);
         saveHomes(WindowState.rememberHome(homes, client));
         dispatchWindow(address, 'hl.dsp.window.move({ workspace = "special:li-window-controls", follow = false, ');
     }
 
     function restoreWindow(address) {
         var client = clientFor(address);
-        if (!isLive(address, "") || !client) return;
+        if (!isLive(address, "") || !client || !WindowState.isMinimized(client, homes)) return;
         var workspace = WindowState.restoreWorkspace(homes, client, chipFor(address).fallback);
         if (!workspace) return;
         var pending = Object.assign({}, pendingRestores);
         pending[address] = { identity: WindowState.clientIdentity(client), workspace: workspace };
         pendingRestores = pending;
         dispatchWindow(address, "hl.dsp.window.move({ workspace = " + Controls.luaString(workspace) + ", follow = true, ");
+    }
+
+    function cancelRestore(address) {
+        if (!pendingRestores[address]) return;
+        var pending = Object.assign({}, pendingRestores);
+        delete pending[address];
+        pendingRestores = pending;
+    }
+
+    function activateWindow(address) {
+        var client = clientFor(address);
+        if (!isLive(address, "") || !client) return;
+        cancelRestore(address);
+        if (WindowState.isMinimized(client, homes)) restoreWindow(address);
+        else focusWindow(address);
+    }
+
+    function maximizeWindow(address) {
+        var client = clientFor(address);
+        if (!isLive(address, "") || !client) return;
+        if (WindowState.isMinimized(client, homes)) {
+            restoreWindow(address);
+            if (!pendingRestores[address]) return;
+            var pending = Object.assign({}, pendingRestores);
+            pending[address] = Object.assign({}, pending[address], { maximize: true, requestedAt: Date.now() });
+            pendingRestores = pending;
+        } else {
+            cancelRestore(address);
+            focusWindow(address);
+            setMaximized(address);
+        }
     }
 
     function importLegacy(payloadJson) {
@@ -272,6 +314,8 @@ Item {
         else if (kind === "maximize") toggleMaximized(address);
         else if (kind === "close") closeWindow(address);
         else if (kind === "restore") restoreWindow(address);
+        else if (kind === "activate") activateWindow(address);
+        else if (kind === "bar-maximize") maximizeWindow(address);
         scheduleRefresh();
     }
 
@@ -287,24 +331,34 @@ Item {
     function buildState(value) {
         return WindowState.buildSnapshot(value, layoutScreens, homes, {
             chromeW: chromeW, chromeH: chromeH, inset: inset, grip: grip,
-            chipW: 128, chipH: 28, shelfGap: 8, shelfPages: shelfPages, focusedAddress: focusedAddress
+            chipW: 128, chipH: 28, shelfGap: 8, shelfPages: shelfPages,
+            focusedAddress: value.activeWindow !== undefined ? nativeAddress(value.activeWindow.address) : nativeFocusedAddress
         });
     }
 
     function applyState(built) {
         rows = built.rows;
         minimized = built.minimized;
+        windows = built.windows;
         monitors = built.monitors;
         clients = built.clients;
         shelves = built.shelves;
         var pending = Object.assign({}, pendingRestores);
         for (var address in pending) {
             var current = clientFor(address);
-            if (!current || WindowState.clientIdentity(current) !== pending[address].identity) {
+            var request = pending[address];
+            if (!current || current.mapped !== true || WindowState.clientIdentity(current) !== request.identity
+                || (request.maximize && Date.now() - request.requestedAt >= 5000)) {
                 delete pending[address];
-            } else if (Controls.workspaceName(current, true) === pending[address].workspace) {
+            } else if (Controls.workspaceName(current, true) === request.workspace) {
                 delete built.homes[address];
                 delete pending[address];
+                // Maximize only after the compositor confirms the restore.
+                // This avoids changing fullscreen state on a special workspace.
+                if (request.maximize && isLive(address, request.identity)) {
+                    focusWindow(address);
+                    setMaximized(address);
+                }
             }
         }
         pendingRestores = pending;
@@ -435,7 +489,7 @@ Item {
         return row.screenName === screenName ? row : emptyGeom;
     }
 
-    onFocusedAddressChanged: if (ready) rebuild()
+    onNativeFocusedAddressChanged: if (ready && (!snapshot || snapshot.activeWindow === undefined)) rebuild()
     onSharedServiceChanged: connectService()
     onHostedScreensChanged: Qt.callLater(poke)
     onOpenedChanged: {
@@ -512,7 +566,7 @@ Item {
 
     Process {
         id: poll
-        command: ["timeout", "--signal=TERM", "--kill-after=0.5s", "2s", "bash", "-c", "set -e; clients=$(hyprctl clients -j); monitors=$(hyprctl monitors -j); printf '{\"clients\":%s,\"monitors\":%s}\\n' \"$clients\" \"$monitors\""]
+        command: ["timeout", "--signal=TERM", "--kill-after=0.5s", "2s", "bash", "-c", "set -e; clients=$(hyprctl clients -j); monitors=$(hyprctl monitors -j); active_window=$(hyprctl activewindow -j); printf '{\"clients\":%s,\"monitors\":%s,\"activeWindow\":%s}\\n' \"$clients\" \"$monitors\" \"$active_window\""]
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: root.pollOutput = text

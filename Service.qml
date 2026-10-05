@@ -8,6 +8,7 @@ QtObject {
     property var controller: null
     property var widgets: []
     readonly property var minimized: controller ? controller.minimized : []
+    readonly property var windows: controller ? controller.windows : []
     readonly property bool fresh: !!controller && controller.fresh && (controller.opened || controller.testMode)
     readonly property var hostedScreens: {
         var screens = [];
@@ -24,6 +25,14 @@ QtObject {
 
     function restore(address, identity) {
         if (fresh) controller.action(address, identity, "restore");
+    }
+
+    function activateWindow(address, identity) {
+        if (fresh) controller.action(address, identity, "activate");
+    }
+
+    function maximize(address, identity) {
+        if (fresh) controller.action(address, identity, "bar-maximize");
     }
 
     function attachWidget(widget) {
@@ -50,7 +59,7 @@ QtObject {
     }
 
     function status() {
-        return JSON.stringify({ fresh: fresh, minimized: minimized.length,
+        return JSON.stringify({ fresh: fresh, windows: windows.length, minimized: minimized.length,
             hostedScreens: hostedScreens, widgets: widgetStatus() });
     }
 }

@@ -177,4 +177,54 @@ const remote = client(4, { monitor: 1, at: [1400, 100] })
 const independent = build([fullscreen, remote], {}, { focusedAddress: fullscreen.address }, [monitor, secondMonitor], [screen, secondScreen])
 assert.strictEqual(independent.rows.find(row => row.address === remote.address).chromeVisible, true)
 
-console.log("State checks passed (snapshot, identity, restore, paging, monitor fallback, and occlusion)")
+// The status bar lists all mapped normal windows on each monitor, independent
+// of visibility, overlay geometry, focus order, or the minimize shelf.
+const barVisible = client(30)
+const barInactive = client(31, { monitor: 1, at: [1400, 100], visible: false, hidden: true, workspace: { name: "8" } })
+const barTiny = client(32, { size: [20, 10] })
+const barMinimized = client(33, { monitor: 1, visible: false, workspace: { name: "special:li-window-controls" } })
+const barLegacy = client(34, { visible: false, workspace: { name: "special:scratchpad" } })
+const barSpecial = client(35, { workspace: { name: "special:notes" } })
+const barUnmapped = client(36, { mapped: false })
+const barDisconnected = client(37, { monitor: 99, visible: false, hidden: true, workspace: { name: "9" } })
+const barClients = [barSpecial, barMinimized, barInactive, barUnmapped, barVisible, barTiny, barLegacy, barDisconnected]
+const barMonitors = [monitor, secondMonitor]
+const barScreens = [screen, secondScreen]
+const barHomes = State.importLegacy({}, barClients, barMonitors, [barLegacy.address])
+const allWindows = build(barClients, barHomes, { focusedAddress: barVisible.address }, barMonitors, barScreens)
+assert(Array.isArray(allWindows.windows), "status bar requires an independent all-window model")
+assert.deepStrictEqual(allWindows.windows.map(window => window.address), ["0x1f", "0x21", "0x1e", "0x20", "0x22", "0x25"])
+assert.strictEqual(allWindows.windows.find(window => window.address === barInactive.address).screenName, secondScreen.name)
+assert.strictEqual(allWindows.windows.find(window => window.address === barInactive.address).workspace, "8")
+assert.strictEqual(allWindows.rows.some(row => row.address === barInactive.address || row.address === barTiny.address), false,
+  "inactive and tiny windows appear in the bar without gaining corner overlays")
+assert.strictEqual(allWindows.windows.find(window => window.address === barMinimized.address).minimized, true)
+assert.strictEqual(allWindows.windows.find(window => window.address === barLegacy.address).minimized, true)
+assert.strictEqual(allWindows.windows.find(window => window.address === barVisible.address).minimized, false)
+assert.strictEqual(allWindows.minimized.length, 2, "all-window model does not replace the minimized overlay model")
+assert.strictEqual(allWindows.windows.find(window => window.address === barDisconnected.address).screenName, screen.name)
+assert.strictEqual(allWindows.windows.find(window => window.address === barDisconnected.address).fallback, "2")
+for (const window of allWindows.windows) {
+  assert.strictEqual(State.clientIdentity(window), State.clientIdentity(barClients.find(current => current.address === window.address)))
+  assert.strictEqual(typeof window.fullscreen, "number")
+  assert.strictEqual(typeof window.focused, "boolean")
+  assert.strictEqual(window.focused, window.address === barVisible.address)
+}
+const changedFocus = build(barClients.slice().reverse(), barHomes, { focusedAddress: barInactive.address }, barMonitors, barScreens)
+assert.deepStrictEqual(changedFocus.windows.map(window => window.address), allWindows.windows.map(window => window.address),
+  "focus and IPC client ordering do not move status bar buttons")
+assert.strictEqual(changedFocus.windows.find(window => window.address === barInactive.address).focused, true)
+assert.strictEqual(changedFocus.windows.find(window => window.address === barVisible.address).focused, false)
+const maximizedBar = build([client(30, { fullscreen: 1 })]).windows[0]
+assert.strictEqual(maximizedBar.fullscreen, 1)
+assert.strictEqual(build([barMinimized], {}, {}, [], []).windows.length, 1,
+  "temporarily screenless snapshots preserve all-window entries")
+assert.strictEqual(build([barInactive], {}, {}, [], []).windows.length, 1)
+assert.strictEqual(build([barLegacy], {}).windows.length, 0, "unimported scratchpads stay outside the status bar")
+const reusedLegacy = Object.assign({}, barLegacy, { stableId: "replacement-native-window" })
+assert.strictEqual(build([reusedLegacy], barHomes).windows.length, 0, "a reused special address does not inherit legacy adoption")
+const oldBarIdentity = allWindows.windows.find(window => window.address === barVisible.address).stableId
+const replacedBar = build([Object.assign({}, barVisible, { stableId: "new-native-window" })]).windows[0]
+assert.notStrictEqual(replacedBar.stableId, oldBarIdentity, "address reuse changes the pinned bar target identity")
+
+console.log("State checks passed (snapshot, identity, restore, paging, monitor fallback, occlusion, and all-window bar model)")

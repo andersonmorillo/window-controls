@@ -33,7 +33,7 @@ Item {
         : (testScreenWidth > 0 ? testScreenWidth : attachedScreen && attachedScreen.width > 0 ? attachedScreen.width : 1280)
     readonly property real maxWidth: Math.max(1, Math.min(BarModel.positive(Number(setting("maxWidth", 360)), 360), screenExtent / 4))
     readonly property bool fresh: service && service.fresh === true
-    readonly property var chips: BarModel.chipsFor(service ? service.minimized : [], screenName)
+    readonly property var chips: BarModel.chipsFor(service ? service.windows : [], screenName)
     readonly property var displayChips: frozenChips !== null ? frozenChips : chips
     readonly property var layout: BarModel.layout(displayChips.length, maxWidth,
         BarModel.positive(Number(setting("chipWidth", 112)), 112), 4, page)
@@ -77,8 +77,16 @@ Item {
 
     function buttonFor(address) {
         for (var i = 0; i < restoreButtons.count; i++) {
-            var button = restoreButtons.itemAt(i);
-            if (button && button.targetAddress === address) return button;
+            var entry = restoreButtons.itemAt(i);
+            if (entry && entry.modelData === address) return entry.titleButton;
+        }
+        return null;
+    }
+
+    function maximizeButtonFor(address) {
+        for (var i = 0; i < restoreButtons.count; i++) {
+            var entry = restoreButtons.itemAt(i);
+            if (entry && entry.modelData === address) return entry.maximizeButton;
         }
         return null;
     }
@@ -104,16 +112,32 @@ Item {
         if (!fresh) return;
         if (kind === "previous") previousPage();
         else if (kind === "next") nextPage();
-        else if (kind === "restore" && service && typeof service.restore === "function") service.restore(address, identity);
+        else if (kind === "activate" && service && typeof service.activateWindow === "function") service.activateWindow(address, identity);
+        else if (kind === "maximize" && service && typeof service.maximize === "function") service.maximize(address, identity);
     }
 
     function status() {
         var point = { x: x, y: y };
         try { if (QsWindow.window) point = mapToGlobal(0, 0); } catch (error) {}
+        var entries = [];
+        for (var i = 0; i < diagnosticAddresses.length; i++) {
+            var address = diagnosticAddresses[i];
+            var metadata = currentMetadataFor(address);
+            var title = buttonFor(address);
+            var maximize = maximizeButtonFor(address);
+            function targetPosition(target) {
+                if (!target) return null;
+                var local = target.mapToItem(root, 0, 0);
+                return { x: local.x, y: local.y, w: target.width, h: target.height };
+            }
+            entries.push({ address: address, minimized: !!metadata && metadata.minimized === true,
+                focused: !!metadata && metadata.focused === true, fullscreen: metadata ? metadata.fullscreen : 0,
+                title: targetPosition(title), maximize: targetPosition(maximize) });
+        }
         return { screen: screenName, x: x, y: y, globalX: point.x, globalY: point.y,
             w: width, h: height, visible: visible, fresh: fresh, vertical: vertical,
             page: layout.page, pages: layout.pages, addresses: diagnosticAddresses,
-            allAddresses: allAddresses, total: chips.length, registered: registeredService !== null };
+            allAddresses: allAddresses, total: chips.length, entries: entries, registered: registeredService !== null };
     }
 
     onServiceChanged: { frozenChips = null; syncRegistration(); }
@@ -137,7 +161,8 @@ Item {
         id: button
         property string label: ""
         property string help: ""
-        property string kind: "restore"
+        property string kind: "activate"
+        property bool activeWindow: false
         property string targetAddress: ""
         property string targetIdentity: ""
         property bool interactive: root.fresh && enabled
@@ -170,7 +195,7 @@ Item {
             pressedAddress = targetAddress;
             pressedIdentity = targetIdentity;
             root.activePresses++;
-            if (kind === "restore") root.freezeTargets();
+            if (kind === "activate" || kind === "maximize") root.freezeTargets();
         }
 
         function clearPress() {
@@ -205,7 +230,7 @@ Item {
         Component.onCompleted: { registered = true; syncClickRegistration(); }
         Component.onDestruction: {
             if (holdingPress) root.activePresses = Math.max(0, root.activePresses - 1);
-            if (area.containsMouse && kind === "restore") root.hoveredChips = Math.max(0, root.hoveredChips - 1);
+            if (area.containsMouse && (kind === "activate" || kind === "maximize")) root.hoveredChips = Math.max(0, root.hoveredChips - 1);
             if (registeredBar && typeof registeredBar.unregisterClickTarget === "function") registeredBar.unregisterClickTarget(button);
             Qt.callLater(root.releaseTargets);
         }
@@ -228,7 +253,15 @@ Item {
             font.pixelSize: Math.min(12, Math.max(1, root.barSize - 10))
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
-            horizontalAlignment: button.kind === "restore" ? Text.AlignLeft : Text.AlignHCenter
+            horizontalAlignment: button.kind === "activate" ? Text.AlignLeft : Text.AlignHCenter
+        }
+        Rectangle {
+            visible: button.activeWindow
+            x: Math.min(7, parent.width / 6)
+            y: parent.height - 5
+            width: Math.max(0, Math.min(18, parent.width - x * 2))
+            height: 2
+            color: root.foreground
         }
         MouseArea {
             id: area
@@ -240,13 +273,13 @@ Item {
             onEntered: {
                 button.hoveredAddress = button.targetAddress;
                 button.hoveredIdentity = button.targetIdentity;
-                if (button.kind === "restore") { root.hoveredChips++; root.freezeTargets(); }
+                if (button.kind === "activate" || button.kind === "maximize") { root.hoveredChips++; root.freezeTargets(); }
                 if (button.api && typeof button.api.showTooltip === "function") button.api.showTooltip(button, button.help);
             }
             onExited: {
                 button.hoveredAddress = "";
                 button.hoveredIdentity = "";
-                if (button.kind === "restore") { root.hoveredChips = Math.max(0, root.hoveredChips - 1); Qt.callLater(root.releaseTargets); }
+                if (button.kind === "activate" || button.kind === "maximize") { root.hoveredChips = Math.max(0, root.hoveredChips - 1); Qt.callLater(root.releaseTargets); }
                 if (button.api && typeof button.api.hideTooltip === "function") button.api.hideTooltip(button);
             }
             onPressed: button.capturePress()
@@ -271,28 +304,59 @@ Item {
         Repeater {
             id: restoreButtons
             model: addressModel
-            delegate: BarButton {
+            delegate: Item {
+                id: windowEntry
                 required property string modelData
                 readonly property var metadata: root.metadataFor(modelData)
                 readonly property var placement: root.placementFor(modelData)
                 readonly property var currentMetadata: root.currentMetadataFor(modelData)
-                objectName: "bar-restore:" + modelData
-                targetAddress: modelData
-                targetIdentity: metadata ? metadata.stableId || "" : ""
-                label: metadata ? metadata.title || "Window" : "Window"
-                help: "Restore " + label + (metadata && metadata.class ? " (" + metadata.class + ")" : "")
+                readonly property real maximizeWidth: Math.min(24, width / 3)
+                readonly property string identity: metadata ? metadata.stableId || "" : ""
+                readonly property bool current: root.fresh && currentMetadata !== null && currentMetadata.stableId === identity
+                property alias titleButton: titleTarget
+                property alias maximizeButton: maximizeTarget
+                objectName: "bar-window:" + modelData
                 visible: placement !== null
-                interactive: root.fresh && currentMetadata !== null && currentMetadata.stableId === targetIdentity
                 x: placement ? placement.x : 0
                 width: placement ? placement.w : 0
                 height: content.height
+
+                BarButton {
+                    id: titleTarget
+                    objectName: "bar-activate:" + windowEntry.modelData
+                    targetAddress: windowEntry.modelData
+                    targetIdentity: windowEntry.identity
+                    label: windowEntry.metadata ? windowEntry.metadata.title || "Window" : "Window"
+                    help: (windowEntry.metadata && windowEntry.metadata.minimized ? "Restore " : "Focus ") + label
+                        + (windowEntry.metadata && windowEntry.metadata.class ? " (" + windowEntry.metadata.class + ")" : "")
+                        + (windowEntry.metadata && windowEntry.metadata.workspace ? " — " + windowEntry.metadata.workspace : "")
+                        + (activeWindow ? " — active" : "")
+                    activeWindow: windowEntry.currentMetadata !== null && windowEntry.currentMetadata.focused === true
+                    interactive: windowEntry.current
+                    width: windowEntry.width - windowEntry.maximizeWidth
+                    height: windowEntry.height
+                }
+
+                BarButton {
+                    id: maximizeTarget
+                    objectName: "bar-maximize:" + windowEntry.modelData
+                    kind: "maximize"
+                    targetAddress: windowEntry.modelData
+                    targetIdentity: windowEntry.identity
+                    label: "□"
+                    help: "Maximize " + titleTarget.label
+                    interactive: windowEntry.current
+                    x: titleTarget.width
+                    width: windowEntry.maximizeWidth
+                    height: windowEntry.height
+                }
             }
         }
 
         BarButton {
             id: previous
             kind: "previous"; label: "‹"
-            help: "Previous minimized windows"
+            help: "Previous windows"
             visible: root.layout.previous !== null
             enabled: root.layout.page > 0
             x: root.layout.previous ? root.layout.previous.x : 0
@@ -302,7 +366,7 @@ Item {
         BarButton {
             id: next
             kind: "next"; label: "›"
-            help: "Next minimized windows"
+            help: "Next windows"
             visible: root.layout.next !== null
             enabled: root.layout.page + 1 < root.layout.pages
             x: root.layout.next ? root.layout.next.x : 0

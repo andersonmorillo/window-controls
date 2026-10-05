@@ -97,6 +97,16 @@ for (const name of ["clients", "monitors"]) {
   }
 }
 assert.deepEqual(api.parseSnapshot('{"clients":[],"monitors":[]}'), { clients: [], monitors: [] }, "empty current desktop is valid")
+for (const activeWindow of [{}, { address: "" }, { address: "0xA012f", title: 'Active "雪"', workspace: { name: "3" } }]) {
+  const snapshot = { clients: [], monitors: [], activeWindow }
+  assert.deepEqual(api.parseSnapshot(JSON.stringify(snapshot)), snapshot, "valid optional active window stays intact")
+}
+for (const activeWindow of [null, false, 17, "invalid", []])
+  assert.throws(() => api.parseSnapshot(JSON.stringify({ clients: [], monitors: [], activeWindow })),
+    /activeWindow.*object/, "invalid active window: " + JSON.stringify(activeWindow))
+for (const address of [null, false, 17, {}, [], "a012f", "0x", " 0xa012f", '0xa012f; hl.dsp.exit()'])
+  assert.throws(() => api.parseSnapshot(JSON.stringify({ clients: [], monitors: [], activeWindow: { address } })),
+    /activeWindow.*address/, "invalid active window address: " + JSON.stringify(address))
 
 function inside(child, area) {
   assert(child.w > 0 && child.h > 0, "positive item size")
