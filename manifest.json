@@ -2,12 +2,25 @@
   "schemaVersion": 1,
   "id": "li.window-controls",
   "name": "Window Controls",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "li",
   "description": "Corner buttons to move, resize, minimize, restore, maximize, and close a window.",
-  "kinds": ["panel"],
+  "kinds": ["panel", "service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {
-    "panel": "Panel.qml"
+    "panel": "Panel.qml",
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Minimized Windows",
+    "description": "Restore minimized windows from the status bar",
+    "category": "Windows",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": { "maxWidth": 360 },
+    "schema": [
+      { "key": "maxWidth", "type": "number", "label": "Maximum width" }
+    ]
   }
 }

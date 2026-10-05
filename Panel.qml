@@ -1,786 +1,822 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
+import QtCore
+import QtQuick.Controls as QQC
 import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Wayland
 import "Controls.js" as Controls
+import "State.js" as WindowState
 
-// Corner controls drawn inside one overlay per screen. Moving a layer-shell
-// window's margins does not move it after it maps, so the buttons are plain
-// items and only the buttons take clicks.
 Item {
-  id: root
+    id: root
 
-  property bool opened: true
-  property var rows: []
-  property var minimized: []
-  property var homes: ({})
-  property var dragPos: ({})
-  property var surfaces: []
-  property var placed: ({})
-  property bool refreshQueued: false
-  property string lastPoll: ""
+    property bool opened: true
+    property var service: null
+    property var shell: null
+    property var attachedService: null
+    readonly property var sharedService: service || (shell && typeof shell.serviceFor === "function" ? shell.serviceFor("li.window-controls") : null)
+    readonly property var hostedScreens: sharedService ? sharedService.hostedScreens : []
+    property bool testMode: false
+    property var testScreens: []
+    property var testCommands: []
+    property bool testNativeValidation: false
+    property var testNativeToplevels: []
+    property var rows: []
+    property var minimized: []
+    property var homes: ({})
+    property var shelves: ({})
+    property var monitors: []
+    property var clients: []
+    property var surfaces: []
+    property var dragPos: ({})
+    property var shelfPages: ({})
+    property var pendingRestores: ({})
+    property var retiredAddresses: ({})
+    readonly property var diskStore: diskLoader.item
+    property var gesture: null
+    property var snapshot: null
+    property bool ready: false
+    property bool refreshQueued: false
+    property string lastPoll: "pending"
+    property string lastError: ""
+    property string pollOutput: ""
+    property string pollStderr: ""
+    property bool pollTimedOut: false
+    property bool pollExpired: false
+    property double lastValidAt: 0
+    property double clockNow: Date.now()
+    property int buttonSize: 28
+    readonly property int chromeW: buttonSize * 4
+    readonly property int chromeH: buttonSize
+    readonly property int inset: 4
+    readonly property int grip: 18
+    readonly property var layoutScreens: testMode && testScreens.length ? testScreens : Quickshell.screens
+    readonly property bool fresh: !pollExpired && lastValidAt > 0 && clockNow - lastValidAt < 3000
+    readonly property string focusedAddress: Hyprland.activeToplevel ? nativeAddress(Hyprland.activeToplevel.address) : ""
+    readonly property var emptyGeom: ({ address: "", x: 0, y: 0, w: 0, h: 0, chromeVisible: false, handleVisible: false })
 
-  // ponytail: at most 12 windows per screen get a corner control. The mask
-  // slots are fixed because Region children cannot be created by Repeater.
-  // Upgrade path is appending Region objects if a screen ever shows more.
-  readonly property int slotCount: 12
-  readonly property int chromeW: 102
-  readonly property int chromeH: 24
-  readonly property int inset: 4
-  readonly property int grip: 18
-
-  function open(payloadJson) { opened = true }
-  function close() { opened = false }
-
-  function status() {
-    var parts = []
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i]
-      var seen = placed[row.address]
-      parts.push(row.address + "@" + row.x + "," + row.y
-        + (seen ? "=" + seen.x + "," + seen.y : "=pending"))
+    PersistentProperties {
+        id: memory
+        reloadableId: "li-window-controls-homes"
+        property string homesJson: "{}"
+        onReloaded: if (root.ready) root.loadHomes()
     }
-    var shelf = []
-    for (var s = 0; s < minimized.length; s++) {
-      var chip = minimized[s]
-      shelf.push(chip.address + "@" + chip.x + "," + chip.y)
-    }
-    return (parts.join(" ") || "empty") + " shelf=" + (shelf.join(" ") || "none") + " poll=" + lastPoll
-  }
 
-  function workspaceOf(address) {
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].address === address) return rows[i].workspace
-    }
-    return ""
-  }
-
-  function rememberHome(address, workspace) {
-    if (!address || !workspace) return
-    var next = {}
-    for (var k in homes) next[k] = homes[k]
-    next[address] = workspace
-    homes = next
-  }
-
-  function dispatch(expr) {
-    Hyprland.dispatch(expr)
-  }
-
-  // One place builds the compositor command, and only a real window address gets in.
-  function dispatchWindow(address, prefix) {
-    var safe = Controls.safeAddress(address)
-    if (!safe) return
-    dispatch(prefix + "window = \"address:" + safe + "\" })")
-  }
-
-  function closeWindow(address) {
-    dispatchWindow(address, "hl.dsp.window.close({ ")
-  }
-
-  function toggleMaximized(address) {
-    dispatchWindow(address, "hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\", layout_aware = false, ")
-  }
-
-  function unsetFullscreen(address) {
-    dispatchWindow(address, "hl.dsp.window.fullscreen({ action = \"unset\", layout_aware = false, ")
-  }
-
-  function floatOn(address) {
-    dispatchWindow(address, "hl.dsp.window.float({ action = \"on\", ")
-  }
-
-  function moveTo(address, x, y) {
-    x = Math.round(x)
-    y = Math.round(y)
-    if (!isFinite(x) || !isFinite(y)) return
-    dispatchWindow(address, "hl.dsp.window.move({ x = " + x + ", y = " + y + ", relative = false, ")
-  }
-
-  function resizeTo(address, w, h) {
-    w = Math.round(w)
-    h = Math.round(h)
-    if (!isFinite(w) || !isFinite(h)) return
-    dispatchWindow(address, "hl.dsp.window.resize({ x = " + w + ", y = " + h + ", relative = false, ")
-  }
-
-  function resizeWindow(address, x, y, w, h) {
-    resizeTo(address, Math.max(160, w), Math.max(80, h))
-    moveTo(address, x, y)
-  }
-
-  // Omarchy's scratchpad is the minimize shelf. The bottom chip opens it again.
-  function minimizeWindow(address) {
-    rememberHome(address, workspaceOf(address))
-    dispatchWindow(address, "hl.dsp.window.move({ workspace = \"special:scratchpad\", follow = false, ")
-  }
-
-  function restoreWindow(address) {
-    var workspace = homes[address] || ""
-    if (!workspace) {
-      for (var i = 0; i < minimized.length; i++) {
-        if (minimized[i].address === address) workspace = minimized[i].fallback
-      }
-    }
-    workspace = Controls.workspaceName({ workspace: workspace })
-    if (!workspace) return
-    dispatchWindow(address, "hl.dsp.window.move({ workspace = \"" + workspace + "\", follow = true, ")
-  }
-
-  function placeBox(address, box) {
-    unsetFullscreen(address)
-    floatOn(address)
-    moveTo(address, box.x, box.y)
-    resizeTo(address, box.w, box.h)
-    moveTo(address, box.x, box.y)
-  }
-
-  function finishDrag(address, cursorX, cursorY, monitor) {
-    var zone = Controls.snapRect(cursorX, cursorY, monitor, 28, 10)
-    if (zone) placeBox(address, zone)
-  }
-
-  function remember(surface) {
-    var next = []
-    for (var i = 0; i < surfaces.length; i++) {
-      if (surfaces[i] && surfaces[i] !== surface) next.push(surfaces[i])
-    }
-    next.push(surface)
-    surfaces = next
-  }
-
-  function forget(surface) {
-    var next = []
-    for (var i = 0; i < surfaces.length; i++) {
-      if (surfaces[i] && surfaces[i] !== surface) next.push(surfaces[i])
-    }
-    surfaces = next
-  }
-
-  function poke() {
-    for (var i = 0; i < surfaces.length; i++) {
-      if (surfaces[i]) surfaces[i].pokeMask()
-    }
-  }
-
-  function note(address, x, y) {
-    if (!address) return
-    var prev = placed[address]
-    if (prev && prev.x === x && prev.y === y) return
-    var next = {}
-    for (var k in placed) next[k] = placed[k]
-    next[address] = { x: x, y: y }
-    placed = next
-  }
-
-  function setDrag(address, x, y) {
-    var next = {}
-    for (var k in dragPos) next[k] = dragPos[k]
-    next[address] = { x: Math.round(x), y: Math.round(y) }
-    dragPos = next
-    poke()
-  }
-
-  function clearDrag(address) {
-    var next = {}
-    for (var k in dragPos) if (k !== address) next[k] = dragPos[k]
-    dragPos = next
-    poke()
-  }
-
-  function screenFor(monitor) {
-    var screens = Quickshell.screens
-    if (!screens || screens.length === 0 || !monitor) return null
-    for (var i = 0; i < screens.length; i++) {
-      if (screens[i].name === monitor.name) return screens[i]
-    }
-    for (var j = 0; j < screens.length; j++) {
-      var mapped = Hyprland.monitorFor(screens[j])
-      if (mapped && mapped.id === monitor.id) return screens[j]
-    }
-    return screens.length === 1 ? screens[0] : null
-  }
-
-  function slotGeom(screenName, index) {
-    var n = 0
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].screenName !== screenName) continue
-      if (n === index) {
-        var row = rows[i]
-        var drag = dragPos[row.address]
-        if (!drag) return row
-        return {
-          address: row.address,
-          x: drag.x,
-          y: drag.y,
-          w: row.w,
-          h: row.h,
-          scale: row.scale,
-          fullscreen: row.fullscreen,
-          atX: row.atX,
-          atY: row.atY,
-          floating: row.floating,
-          screenName: row.screenName,
-          monX: row.monX,
-          monY: row.monY,
-          monW: row.monW,
-          monH: row.monH,
-          reserved: row.reserved
+    Loader {
+        id: diskLoader
+        active: !root.testMode
+        sourceComponent: Component {
+            Settings {
+                location: "file://" + Quickshell.statePath("li-window-controls.ini")
+                property string homesJson: "{}"
+            }
         }
-      }
-      n++
+        onLoaded: if (root.ready) root.loadHomes()
     }
-    return { address: "", x: 0, y: 0, w: 0, h: 0, scale: 1, fullscreen: 0, atX: 0, atY: 0, floating: false, screenName: screenName, monX: 0, monY: 0, monW: 0, monH: 0, reserved: [0, 0, 0, 0] }
-  }
 
-  function handleGeom(screenName, index) {
-    var n = 0
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].screenName !== screenName) continue
-      if (n === index) {
-        var row = rows[i]
-        return {
-          address: row.address,
-          x: row.handleX,
-          y: row.handleY,
-          w: grip,
-          h: grip,
-          scale: row.scale,
-          atX: row.atX,
-          atY: row.atY,
-          winW: row.winW,
-          winH: row.winH,
-          floating: row.floating,
-          fullscreen: row.fullscreen
+    function loadHomes() {
+        var saved = memory.homesJson;
+        if (saved === "{}" && diskStore) saved = diskStore.homesJson;
+        homes = WindowState.readHomes(saved);
+        rebuild();
+    }
+
+    function saveHomes(next) {
+        homes = next;
+        if (testMode) return;
+        var encoded = JSON.stringify(homes);
+        memory.homesJson = encoded;
+        if (diskStore && diskStore.homesJson !== encoded) {
+            diskStore.homesJson = encoded;
+            diskStore.sync();
         }
-      }
-      n++
     }
-    return { address: "", x: 0, y: 0, w: 0, h: 0, scale: 1, atX: 0, atY: 0, winW: 0, winH: 0, floating: false, fullscreen: 0 }
-  }
 
-  function chipGeom(screenName, index) {
-    var n = 0
-    for (var i = 0; i < minimized.length; i++) {
-      if (minimized[i].screenName !== screenName) continue
-      if (n === index) return minimized[i]
-      n++
+    function open(payloadJson) {
+        clockNow = Date.now();
+        opened = true;
+        scheduleRefresh();
     }
-    return { address: "", title: "", x: 0, y: 0, w: 0, h: 0 }
-  }
 
-  function minimizedCount(screenName) {
-    var n = 0
-    for (var i = 0; i < minimized.length; i++) {
-      if (minimized[i].screenName === screenName) n++
+    function connectService() {
+        if (attachedService === sharedService) return;
+        if (attachedService) attachedService.detachController(root);
+        attachedService = sharedService;
+        if (attachedService) attachedService.attachController(root);
+        Qt.callLater(poke);
     }
-    return n
-  }
 
-  function countFor(screenName) {
-    var n = 0
-    for (var i = 0; i < rows.length; i++) if (rows[i].screenName === screenName) n++
-    return n
-  }
+    function barHosted(screenName) { return hostedScreens.indexOf(screenName) >= 0; }
 
-  function ingest(text) {
-    var parts = String(text || "").split("---MON---")
-    if (parts.length < 2) return
-    var clients
-    var monitors
-    try {
-      clients = JSON.parse(parts[0])
-      monitors = JSON.parse(parts[1])
-    } catch (e) {
-      return
+    function close() {
+        opened = false;
+        cancelGesture();
+        eventRefresh.stop();
+        refreshQueued = false;
     }
-    if (!Array.isArray(clients) || !Array.isArray(monitors)) return
 
-    var mons = {}
-    for (var i = 0; i < monitors.length; i++) mons[monitors[i].id] = monitors[i]
+    function status() {
+        return JSON.stringify({ version: "1.2.0", windows: rows.length, minimized: minimized.length,
+            shelves: shelves, poll: lastPoll, error: lastError,
+            barWidgets: sharedService ? sharedService.widgetStatus() : [],
+            validAgeMs: lastValidAt ? Math.max(0, Date.now() - lastValidAt) : null,
+            fresh: fresh, gesture: gesture ? { address: gesture.address, kind: gesture.kind, moved: gesture.moved } : null,
+            controls: rows.map(function(row) { return { address: row.address, screen: row.screenName,
+                chrome: { visible: row.chromeVisible && fresh, x: row.x, y: row.y, w: row.w, h: row.h },
+                handle: { visible: row.handleVisible && fresh, x: row.handleX, y: row.handleY, w: row.handleW, h: row.handleH } }; }),
+            chips: minimized.map(function(chip) { return { address: chip.address, screen: chip.screenName,
+                visible: chip.pageVisible && fresh && !barHosted(chip.screenName), x: chip.x, y: chip.y, w: chip.w, h: chip.h }; }),
+            regions: surfaces.map(function(surface) { return { screen: surface.modelData.name, count: surface.regionCount }; }) });
+    }
 
-    var built = []
-    var shelf = []
-    var shelfCount = {}
-    var alive = {}
-    for (var c = 0; c < clients.length; c++) {
-      var client = clients[c]
-      if (!client || !client.address) continue
-      alive[client.address] = true
-      var mon = mons[client.monitor]
-      var screen = screenFor(mon)
-      if (!screen && Quickshell.screens && Quickshell.screens.length === 1) screen = Quickshell.screens[0]
-      if (!screen) continue
-      if (Controls.onShelf(client)) {
-        var n = shelfCount[screen.name] || 0
-        if (n >= slotCount) continue
-        shelfCount[screen.name] = n + 1
-        var fallbackMon = mon
-        if (!fallbackMon) {
-          for (var mid in mons) { fallbackMon = mons[mid]; break }
+    function clientFor(address) {
+        for (var i = 0; i < clients.length; i++) if (clients[i] && clients[i].address === address) return clients[i];
+        return null;
+    }
+
+    function rowFor(address) {
+        for (var i = 0; i < rows.length; i++) if (rows[i].address === address) return rows[i];
+        return emptyGeom;
+    }
+
+    function chipFor(address) {
+        for (var i = 0; i < minimized.length; i++) if (minimized[i].address === address) return minimized[i];
+        return emptyGeom;
+    }
+
+    function nativeAddress(value) {
+        if (typeof value !== "string" || value === "") return "";
+        return Controls.safeAddress(value.indexOf("0x") === 0 ? value : "0x" + value).toLowerCase();
+    }
+
+    function retireAddress(value) {
+        var address = nativeAddress(value);
+        if (!address) return;
+        var next = Object.assign({}, retiredAddresses);
+        var client = clientFor(address);
+        next[address] = client ? WindowState.clientIdentity(client) : "";
+        retiredAddresses = next;
+        if (gesture && gesture.address.toLowerCase() === address) cancelGesture();
+    }
+
+    function isLive(address, identity) {
+        var client = clientFor(address);
+        if (!fresh || Date.now() - lastValidAt >= 3000 || !client || client.mapped !== true || !Controls.safeAddress(address)
+            || (identity && WindowState.clientIdentity(client) !== identity)) return false;
+        var retired = retiredAddresses[address.toLowerCase()];
+        if (retired !== undefined && (!retired || retired === WindowState.clientIdentity(client))) return false;
+        if (testMode && !testNativeValidation) return true;
+        // Native toplevel state closes the interval between a press/release
+        // and the next geometry poll, including compositor address reuse.
+        var live = testMode ? testNativeToplevels : Hyprland.toplevels.values;
+        for (var i = 0; i < live.length; i++) {
+            if (!live[i] || nativeAddress(live[i].address) !== address.toLowerCase()) continue;
+            var object = live[i].lastIpcObject;
+            // Native bindings may be unavailable or still initializing. A
+            // populated identity can reject reuse; an absent binding must not
+            // disable mapped windows or minimized clients omitted by a protocol.
+            if (object && object.pid > 0 && nativeAddress(object.address)) {
+                var normalized = Object.assign({}, object, { address: nativeAddress(object.address) });
+                return WindowState.clientIdentity(normalized) === WindowState.clientIdentity(client);
+            }
+            return true;
         }
-        shelf.push({
-          address: client.address,
-          title: Controls.windowLabel(client),
-          screenName: screen.name,
-          fallback: Controls.workspaceName({ workspace: fallbackMon && fallbackMon.activeWorkspace }),
-          x: 8 + n * 112,
-          y: screen.height - 32,
-          w: 104,
-          h: 24
-        })
-        continue
-      }
-      if (!Controls.showable(client) || !mon) continue
-      var place = Controls.chromeTopLeft(client, mon, screen, chromeW, inset)
-      var handle = Controls.resizeHandle(client, mon, screen, grip)
-      if (!place || !handle) continue
-      built.push({
-        address: client.address,
-        x: place.x,
-        y: place.y,
-        w: chromeW,
-        h: chromeH,
-        handleX: handle.x,
-        handleY: handle.y,
-        winW: client.size[0],
-        winH: client.size[1],
-        scale: place.scale,
-        fullscreen: client.fullscreen,
-        atX: client.at[0],
-        atY: client.at[1],
-        floating: client.floating === true,
-        workspace: Controls.workspaceName(client),
-        screenName: screen.name,
-        monX: mon.x,
-        monY: mon.y,
-        monW: mon.width,
-        monH: mon.height,
-        reserved: mon.reserved || [0, 0, 0, 0]
-      })
+        return true;
     }
-    var keptHomes = {}
-    for (var hk in homes) if (alive[hk]) keptHomes[hk] = homes[hk]
-    homes = keptHomes
-    built.sort(function(a, b) {
-      if (a.address < b.address) return -1
-      if (a.address > b.address) return 1
-      return 0
-    })
-    rows = built
-    minimized = shelf
-    Qt.callLater(root.poke)
-  }
 
-  function scheduleRefresh() {
-    if (poll.running) {
-      refreshQueued = true
-      return
-    }
-    poll.running = true
-  }
-
-  Component.onCompleted: {
-    console.log("window-controls ready restore")
-    scheduleRefresh()
-  }
-
-  Component.onDestruction: {
-    var held = surfaces
-    surfaces = []
-    for (var i = 0; i < held.length; i++) {
-      if (!held[i]) continue
-      try { held[i].visible = false } catch (e) {}
-    }
-  }
-
-  // ponytail: event debounce plus a 400ms poll. Upgrade path is binding
-  // Hyprland.toplevels directly if lastIpcObject starts carrying `at`/`size`.
-  Timer {
-    interval: 400
-    running: true
-    repeat: true
-    onTriggered: root.scheduleRefresh()
-  }
-
-  Connections {
-    target: Hyprland
-    function onRawEvent(event) { root.scheduleRefresh() }
-  }
-
-  Process {
-    id: poll
-    command: ["bash", "-c", "hyprctl clients -j; printf '\\n---MON---\\n'; hyprctl monitors -j"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.ingest(text)
-    }
-    onExited: function(exitCode) { root.lastPoll = String(exitCode) }
-    onRunningChanged: {
-      if (running || !root.refreshQueued) return
-      root.refreshQueued = false
-      root.scheduleRefresh()
-    }
-  }
-
-  Variants {
-    model: Quickshell.screens
-
-    delegate: Component {
-      PanelWindow {
-        id: overlay
-        required property var modelData
-
-        function g(i) { return root.slotGeom(modelData.name, i) }
-        function hnd(i) { return root.handleGeom(modelData.name, i) }
-        function sh(i) { return root.chipGeom(modelData.name, i) }
-        function pokeMask() { hit.changed() }
-
-        Component.onCompleted: root.remember(overlay)
-        Component.onDestruction: root.forget(overlay)
-
-        visible: root.opened && (root.countFor(modelData.name) > 0 || root.minimizedCount(modelData.name) > 0)
-        screen: modelData
-        color: "transparent"
-        exclusionMode: ExclusionMode.Ignore
-        focusable: false
-
-        anchors.left: true
-        anchors.right: true
-        anchors.top: true
-        anchors.bottom: true
-
-        WlrLayershell.namespace: "li-window-controls"
-        WlrLayershell.layer: WlrLayer.Overlay
-        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-
-        mask: Region {
-          id: hit
-          Region { x: overlay.g(0).x; y: overlay.g(0).y; width: overlay.g(0).w; height: overlay.g(0).h }
-          Region { x: overlay.g(1).x; y: overlay.g(1).y; width: overlay.g(1).w; height: overlay.g(1).h }
-          Region { x: overlay.g(2).x; y: overlay.g(2).y; width: overlay.g(2).w; height: overlay.g(2).h }
-          Region { x: overlay.g(3).x; y: overlay.g(3).y; width: overlay.g(3).w; height: overlay.g(3).h }
-          Region { x: overlay.g(4).x; y: overlay.g(4).y; width: overlay.g(4).w; height: overlay.g(4).h }
-          Region { x: overlay.g(5).x; y: overlay.g(5).y; width: overlay.g(5).w; height: overlay.g(5).h }
-          Region { x: overlay.g(6).x; y: overlay.g(6).y; width: overlay.g(6).w; height: overlay.g(6).h }
-          Region { x: overlay.g(7).x; y: overlay.g(7).y; width: overlay.g(7).w; height: overlay.g(7).h }
-          Region { x: overlay.g(8).x; y: overlay.g(8).y; width: overlay.g(8).w; height: overlay.g(8).h }
-          Region { x: overlay.g(9).x; y: overlay.g(9).y; width: overlay.g(9).w; height: overlay.g(9).h }
-          Region { x: overlay.g(10).x; y: overlay.g(10).y; width: overlay.g(10).w; height: overlay.g(10).h }
-          Region { x: overlay.g(11).x; y: overlay.g(11).y; width: overlay.g(11).w; height: overlay.g(11).h }
-          Region { x: overlay.hnd(0).x; y: overlay.hnd(0).y; width: overlay.hnd(0).w; height: overlay.hnd(0).h }
-          Region { x: overlay.hnd(1).x; y: overlay.hnd(1).y; width: overlay.hnd(1).w; height: overlay.hnd(1).h }
-          Region { x: overlay.hnd(2).x; y: overlay.hnd(2).y; width: overlay.hnd(2).w; height: overlay.hnd(2).h }
-          Region { x: overlay.hnd(3).x; y: overlay.hnd(3).y; width: overlay.hnd(3).w; height: overlay.hnd(3).h }
-          Region { x: overlay.hnd(4).x; y: overlay.hnd(4).y; width: overlay.hnd(4).w; height: overlay.hnd(4).h }
-          Region { x: overlay.hnd(5).x; y: overlay.hnd(5).y; width: overlay.hnd(5).w; height: overlay.hnd(5).h }
-          Region { x: overlay.hnd(6).x; y: overlay.hnd(6).y; width: overlay.hnd(6).w; height: overlay.hnd(6).h }
-          Region { x: overlay.hnd(7).x; y: overlay.hnd(7).y; width: overlay.hnd(7).w; height: overlay.hnd(7).h }
-          Region { x: overlay.hnd(8).x; y: overlay.hnd(8).y; width: overlay.hnd(8).w; height: overlay.hnd(8).h }
-          Region { x: overlay.hnd(9).x; y: overlay.hnd(9).y; width: overlay.hnd(9).w; height: overlay.hnd(9).h }
-          Region { x: overlay.hnd(10).x; y: overlay.hnd(10).y; width: overlay.hnd(10).w; height: overlay.hnd(10).h }
-          Region { x: overlay.hnd(11).x; y: overlay.hnd(11).y; width: overlay.hnd(11).w; height: overlay.hnd(11).h }
-          Region { x: overlay.sh(0).x; y: overlay.sh(0).y; width: overlay.sh(0).w; height: overlay.sh(0).h }
-          Region { x: overlay.sh(1).x; y: overlay.sh(1).y; width: overlay.sh(1).w; height: overlay.sh(1).h }
-          Region { x: overlay.sh(2).x; y: overlay.sh(2).y; width: overlay.sh(2).w; height: overlay.sh(2).h }
-          Region { x: overlay.sh(3).x; y: overlay.sh(3).y; width: overlay.sh(3).w; height: overlay.sh(3).h }
-          Region { x: overlay.sh(4).x; y: overlay.sh(4).y; width: overlay.sh(4).w; height: overlay.sh(4).h }
-          Region { x: overlay.sh(5).x; y: overlay.sh(5).y; width: overlay.sh(5).w; height: overlay.sh(5).h }
-          Region { x: overlay.sh(6).x; y: overlay.sh(6).y; width: overlay.sh(6).w; height: overlay.sh(6).h }
-          Region { x: overlay.sh(7).x; y: overlay.sh(7).y; width: overlay.sh(7).w; height: overlay.sh(7).h }
-          Region { x: overlay.sh(8).x; y: overlay.sh(8).y; width: overlay.sh(8).w; height: overlay.sh(8).h }
-          Region { x: overlay.sh(9).x; y: overlay.sh(9).y; width: overlay.sh(9).w; height: overlay.sh(9).h }
-          Region { x: overlay.sh(10).x; y: overlay.sh(10).y; width: overlay.sh(10).w; height: overlay.sh(10).h }
-          Region { x: overlay.sh(11).x; y: overlay.sh(11).y; width: overlay.sh(11).w; height: overlay.sh(11).h }
+    function dispatch(expr) {
+        if (testMode) {
+            testCommands = testCommands.concat([expr]);
+            return;
         }
+        if (opened && fresh) Hyprland.dispatch(expr);
+    }
 
-        Repeater {
-          model: root.slotCount
+    function dispatchWindow(address, prefix) {
+        if (!isLive(address, "")) return;
+        dispatch(prefix + "window = " + Controls.luaString("address:" + address) + " })");
+    }
 
-          delegate: Item {
-            id: cluster
-            required property int index
-            readonly property var geom: root.slotGeom(overlay.modelData.name, index)
+    function closeWindow(address) { dispatchWindow(address, "hl.dsp.window.close({ "); }
+    function toggleMaximized(address) { dispatchWindow(address, 'hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle", layout_aware = false, '); }
+    function unsetFullscreen(address) { dispatchWindow(address, 'hl.dsp.window.fullscreen({ action = "unset", layout_aware = false, '); }
+    function floatOn(address) { dispatchWindow(address, 'hl.dsp.window.float({ action = "on", '); }
 
-            visible: geom.address !== ""
-            x: geom.x
-            y: geom.y
-            width: geom.w > 0 ? geom.w : 0
-            height: geom.h > 0 ? geom.h : 0
+    function moveTo(address, x, y) {
+        if (!isFinite(x) || !isFinite(y)) return;
+        dispatchWindow(address, "hl.dsp.window.move({ x = " + Math.round(x) + ", y = " + Math.round(y) + ", relative = false, ");
+    }
 
-            onXChanged: root.note(geom.address, x, y)
-            onYChanged: root.note(geom.address, x, y)
+    function resizeTo(address, w, h, exact) {
+        if (!isFinite(w) || !isFinite(h)) return;
+        var minimumW = exact ? 1 : 160;
+        var minimumH = exact ? 1 : 80;
+        dispatchWindow(address, "hl.dsp.window.resize({ x = " + Math.max(minimumW, Math.round(w)) + ", y = " + Math.max(minimumH, Math.round(h)) + ", relative = false, ");
+    }
 
-            Rectangle {
-              anchors.fill: parent
-              radius: 6
-              color: "#e61c1c1c"
-              border.color: "#66ffffff"
-              border.width: 1
+    function resizeWindow(address, x, y, w, h) {
+        resizeTo(address, w, h);
+        moveTo(address, x, y);
+    }
 
-              Row {
-                anchors.fill: parent
+    function minimizeWindow(address) {
+        var client = clientFor(address);
+        if (!isLive(address, "") || !client) return;
+        saveHomes(WindowState.rememberHome(homes, client));
+        dispatchWindow(address, 'hl.dsp.window.move({ workspace = "special:li-window-controls", follow = false, ');
+    }
 
-                MouseArea {
-                  id: grip
-                  width: 30
-                  height: parent.height
-                  cursorShape: Qt.SizeAllCursor
-                  onPressed: function(mouse) { cluster.beginDrag(mouse) }
-                  onPositionChanged: function(mouse) { if (pressed) cluster.drag(mouse) }
-                  onReleased: cluster.endDrag()
+    function restoreWindow(address) {
+        var client = clientFor(address);
+        if (!isLive(address, "") || !client) return;
+        var workspace = WindowState.restoreWorkspace(homes, client, chipFor(address).fallback);
+        if (!workspace) return;
+        var pending = Object.assign({}, pendingRestores);
+        pending[address] = { identity: WindowState.clientIdentity(client), workspace: workspace };
+        pendingRestores = pending;
+        dispatchWindow(address, "hl.dsp.window.move({ workspace = " + Controls.luaString(workspace) + ", follow = true, ");
+    }
 
-                  Text {
-                    anchors.centerIn: parent
-                    text: "⋮⋮"
-                    color: "#f2f2f2"
-                    font.pixelSize: 11
-                  }
+    function importLegacy(payloadJson) {
+        var addresses;
+        try {
+            var payload = JSON.parse(payloadJson);
+            addresses = Array.isArray(payload) ? payload : payload.addresses;
+        } catch (e) { return "Invalid address list"; }
+        if (!Array.isArray(addresses) || !fresh) return "A current snapshot and explicit addresses are required";
+        saveHomes(WindowState.importLegacy(homes, clients, monitors, addresses));
+        rebuild();
+        return "Imported selected legacy windows";
+    }
+
+    function placeBox(address, box) {
+        unsetFullscreen(address);
+        floatOn(address);
+        moveTo(address, box.x, box.y);
+        resizeTo(address, box.w, box.h, true);
+        moveTo(address, box.x, box.y);
+    }
+
+    function finishDrag(address, cursorX, cursorY) {
+        var destination = Controls.monitorAt(cursorX, cursorY, monitors);
+        var zone = destination ? Controls.snapRect(cursorX, cursorY, destination, 28, 10) : null;
+        if (zone) placeBox(address, zone);
+    }
+
+    function action(address, identity, kind) {
+        if (!isLive(address, identity)) return;
+        if (kind === "minimize") minimizeWindow(address);
+        else if (kind === "maximize") toggleMaximized(address);
+        else if (kind === "close") closeWindow(address);
+        else if (kind === "restore") restoreWindow(address);
+        scheduleRefresh();
+    }
+
+    function setPage(screenName, delta) {
+        var shelf = shelves[screenName];
+        if (!shelf) return;
+        var next = Object.assign({}, shelfPages);
+        next[screenName] = Math.max(0, Math.min(shelf.pages - 1, shelf.page + delta));
+        shelfPages = next;
+        rebuild();
+    }
+
+    function buildState(value) {
+        return WindowState.buildSnapshot(value, layoutScreens, homes, {
+            chromeW: chromeW, chromeH: chromeH, inset: inset, grip: grip,
+            chipW: 128, chipH: 28, shelfGap: 8, shelfPages: shelfPages, focusedAddress: focusedAddress
+        });
+    }
+
+    function applyState(built) {
+        rows = built.rows;
+        minimized = built.minimized;
+        monitors = built.monitors;
+        clients = built.clients;
+        shelves = built.shelves;
+        var pending = Object.assign({}, pendingRestores);
+        for (var address in pending) {
+            var current = clientFor(address);
+            if (!current || WindowState.clientIdentity(current) !== pending[address].identity) {
+                delete pending[address];
+            } else if (Controls.workspaceName(current, true) === pending[address].workspace) {
+                delete built.homes[address];
+                delete pending[address];
+            }
+        }
+        pendingRestores = pending;
+        var retired = Object.assign({}, retiredAddresses);
+        for (var key in retired) {
+            var liveClient = clientFor(key);
+            if (!liveClient || !retired[key] || WindowState.clientIdentity(liveClient) !== retired[key]) delete retired[key];
+        }
+        retiredAddresses = retired;
+        saveHomes(built.homes);
+        if (gesture) {
+            var sourceExists = monitors.some(function(monitor) { return monitor && monitor.name === gesture.screenName; });
+            if (!sourceExists || !isLive(gesture.address, gesture.identity)) cancelGesture();
+        }
+        Qt.callLater(poke);
+    }
+
+    function rebuild() {
+        if (snapshot) applyState(buildState(snapshot));
+    }
+
+    function ingest(text) {
+        try {
+            var parsed = Controls.parseSnapshot(text);
+            var built = buildState(parsed);
+            snapshot = parsed;
+            lastValidAt = Date.now();
+            clockNow = lastValidAt;
+            pollExpired = false;
+            lastError = "";
+            applyState(built);
+            return true;
+        } catch (e) {
+            lastError = "Snapshot: " + String(e.message || e);
+            console.warn("window-controls " + lastError);
+            return false;
+        }
+    }
+
+    function scheduleRefresh() {
+        if (testMode || !opened) return;
+        if (poll.running) { refreshQueued = true; return; }
+        pollOutput = "";
+        pollStderr = "";
+        pollTimedOut = false;
+        poll.running = true;
+    }
+
+    function poke() {
+        for (var i = 0; i < surfaces.length; i++) if (surfaces[i]) surfaces[i].pokeMask();
+    }
+
+    function remember(surface) { surfaces = surfaces.concat([surface]); }
+    function forget(surface) { surfaces = surfaces.filter(function(item) { return item && item !== surface; }); }
+    function beginGesture(address, kind, x, y, screenName) {
+        cancelGesture();
+        var row = rowFor(address);
+        if (!isLive(address, row.stableId) || !row.address) return;
+        gesture = { address: address, identity: row.stableId, kind: kind, screenName: screenName || row.screenName,
+            pressX: x, pressY: y, cursorX: x, cursorY: y, x: row.atX, y: row.atY,
+            w: row.winW, h: row.winH, chromeX: row.x, chromeY: row.y,
+            chromeW: row.w, chromeH: row.h, handleX: row.handleX, handleY: row.handleY,
+            handleW: row.handleW, handleH: row.handleH,
+            floating: row.floating, fullscreen: row.fullscreen, moved: false };
+    }
+
+    function updateGesture(x, y) {
+        if (!gesture) return;
+        if (!isLive(gesture.address, gesture.identity)) { cancelGesture(); return; }
+        var next = Object.assign({}, gesture);
+        var dx = x - next.pressX;
+        var dy = y - next.pressY;
+        if (!next.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+        if (!next.moved) {
+            if (next.fullscreen) unsetFullscreen(next.address);
+            if (!next.floating) floatOn(next.address);
+            next.moved = true;
+        }
+        next.cursorX = x;
+        next.cursorY = y;
+        gesture = next;
+        if (next.kind === "move") {
+            var positions = {};
+            positions[next.address] = { x: next.chromeX + dx, y: next.chromeY + dy };
+            dragPos = positions;
+            moveTo(next.address, next.x + dx, next.y + dy);
+        } else {
+            resizeWindow(next.address, next.x, next.y, next.w + dx, next.h + dy);
+        }
+        poke();
+    }
+
+    function endGesture() {
+        var ended = gesture;
+        cancelGesture();
+        if (ended && ended.moved && ended.kind === "move" && isLive(ended.address, ended.identity))
+            finishDrag(ended.address, ended.cursorX, ended.cursorY);
+        scheduleRefresh();
+    }
+
+    function cancelGesture() {
+        gesture = null;
+        dragPos = {};
+        poke();
+    }
+
+    function controlGeom(address, screenName) {
+        var row = rowFor(address);
+        if (gesture && gesture.address === address && gesture.kind === "move") {
+            if (gesture.screenName !== screenName) return emptyGeom;
+            return Object.assign({}, row, { screenName: screenName, chromeVisible: true,
+                x: dragPos[address] ? dragPos[address].x : gesture.chromeX,
+                y: dragPos[address] ? dragPos[address].y : gesture.chromeY,
+                w: gesture.chromeW, h: gesture.chromeH });
+        }
+        return row.screenName === screenName ? row : emptyGeom;
+    }
+
+    function resizeGeom(address, screenName) {
+        var row = rowFor(address);
+        if (gesture && gesture.address === address && gesture.kind === "resize") {
+            if (gesture.screenName !== screenName) return emptyGeom;
+            return Object.assign({}, row, { screenName: screenName, handleVisible: true,
+                handleX: gesture.handleX + (gesture.moved ? Math.max(160 - gesture.w, gesture.cursorX - gesture.pressX) : 0),
+                handleY: gesture.handleY + (gesture.moved ? Math.max(80 - gesture.h, gesture.cursorY - gesture.pressY) : 0),
+                handleW: gesture.handleW, handleH: gesture.handleH });
+        }
+        return row.screenName === screenName ? row : emptyGeom;
+    }
+
+    onFocusedAddressChanged: if (ready) rebuild()
+    onSharedServiceChanged: connectService()
+    onHostedScreensChanged: Qt.callLater(poke)
+    onOpenedChanged: {
+        if (!opened) cancelGesture();
+        else {
+            clockNow = Date.now();
+            if (ready) scheduleRefresh();
+        }
+    }
+    onFreshChanged: {
+        if (!fresh) cancelGesture();
+        Qt.callLater(poke);
+    }
+    Component.onCompleted: {
+        ready = true;
+        connectService();
+        if (!testMode) loadHomes();
+        scheduleRefresh();
+    }
+    Component.onDestruction: {
+        if (attachedService) attachedService.detachController(root);
+        if (!testMode && diskStore) diskStore.sync();
+        for (var i = 0; i < surfaces.length; i++) if (surfaces[i]) surfaces[i].visible = false;
+    }
+
+    Timer {
+        interval: root.gesture ? 70 : 1000
+        running: root.opened && !root.testMode
+        repeat: true
+        onTriggered: root.scheduleRefresh()
+    }
+    Timer {
+        interval: 250
+        running: root.opened
+        repeat: true
+        onTriggered: root.clockNow = Date.now()
+    }
+    Timer {
+        id: eventRefresh
+        interval: 40
+        onTriggered: root.scheduleRefresh()
+    }
+    Timer {
+        id: pollDeadline
+        interval: 2200
+        onTriggered: {
+            root.pollTimedOut = true;
+            root.pollExpired = true;
+            root.lastError = "Poll timed out";
+            poll.signal(15);
+            pollKill.start();
+        }
+    }
+    Timer {
+        id: pollKill
+        interval: 500
+        onTriggered: if (poll.running) poll.signal(9)
+    }
+    Connections {
+        target: Hyprland
+        function onRawEvent(event) {
+            var name = event.name || "";
+            if (!root.testMode && name === "closewindow") root.retireAddress(event.data);
+            if (!root.opened || root.testMode) return;
+            if (/^(openwindow|closewindow|movewindow|activewindow|focusedmon|workspace|monitor|fullscreen|changefloatingmode|windowtitle|configreloaded)/.test(name)) {
+                if (!eventRefresh.running) eventRefresh.start();
+            }
+        }
+    }
+    Connections {
+        target: Quickshell
+        function onScreensChanged() { if (root.ready) { root.rebuild(); root.scheduleRefresh(); } }
+    }
+
+    Process {
+        id: poll
+        command: ["timeout", "--signal=TERM", "--kill-after=0.5s", "2s", "bash", "-c", "set -e; clients=$(hyprctl clients -j); monitors=$(hyprctl monitors -j); printf '{\"clients\":%s,\"monitors\":%s}\\n' \"$clients\" \"$monitors\""]
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: root.pollOutput = text
+        }
+        stderr: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: root.pollStderr = text
+        }
+        onExited: function(exitCode) {
+            root.lastPoll = String(exitCode);
+            pollDeadline.stop();
+            pollKill.stop();
+            if (exitCode === 0 && !root.pollTimedOut) root.ingest(root.pollOutput);
+            else {
+                if (exitCode === 124 || exitCode === 137 || root.pollTimedOut) {
+                    root.pollExpired = true;
+                    root.lastError = "Poll timed out";
+                } else root.lastError = "Poll exit " + exitCode + (root.pollStderr ? ": " + root.pollStderr.trim() : "");
+                console.warn("window-controls " + root.lastError);
+            }
+            if (root.refreshQueued) {
+                root.refreshQueued = false;
+                Qt.callLater(root.scheduleRefresh);
+            }
+        }
+        onRunningChanged: if (running) pollDeadline.restart()
+    }
+
+    Component {
+        id: regionFactory
+        Region {
+            property Item target
+            x: target ? Math.round(target.x) : 0
+            y: target ? Math.round(target.y) : 0
+            width: target && target.visible && target.enabled ? Math.round(target.width) : 0
+            height: target && target.visible && target.enabled ? Math.round(target.height) : 0
+        }
+    }
+
+    Variants {
+        model: Quickshell.screens
+        delegate: Component {
+            PanelWindow {
+                id: overlay
+                required property var modelData
+                property int regionCount: 0
+                readonly property var shelf: root.shelves[modelData.name] || null
+                screen: modelData
+                visible: root.opened && root.fresh && ((root.gesture && root.gesture.screenName === modelData.name) || root.rows.some(function(row) {
+                    return row.screenName === modelData.name && (row.chromeVisible || row.handleVisible);
+                }) || (!root.barHosted(modelData.name) && root.minimized.some(function(chip) { return chip.screenName === modelData.name; })))
+                color: "transparent"
+                exclusionMode: ExclusionMode.Ignore
+                focusable: false
+                anchors.left: true
+                anchors.right: true
+                anchors.top: true
+                anchors.bottom: true
+                WlrLayershell.namespace: "li-window-controls"
+                WlrLayershell.layer: WlrLayer.Overlay
+                WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+                mask: Region { id: hit }
+
+                function pokeMask() { hit.changed(); }
+                function attach(item) {
+                    var region = regionFactory.createObject(hit, { target: item });
+                    hit.regions.push(region);
+                    regionCount = hit.regions.length;
+                    hit.changed();
+                    return region;
+                }
+                function detach(region) {
+                    if (!region) return;
+                    var index = hit.regions.indexOf(region);
+                    if (index >= 0) hit.regions.splice(index, 1);
+                    regionCount = hit.regions.length;
+                    region.destroy();
+                    hit.changed();
+                }
+                function clusterFor(address) {
+                    for (var i = 0; i < chromeRepeater.count; i++) {
+                        var item = chromeRepeater.itemAt(i);
+                        if (item && item.objectName === "chrome:" + address) return item;
+                    }
+                    return null;
+                }
+                function handleFor(address) {
+                    for (var i = 0; i < handleRepeater.count; i++) {
+                        var item = handleRepeater.itemAt(i);
+                        if (item && item.objectName === "resize:" + address) return item;
+                    }
+                    return null;
+                }
+                Component.onCompleted: root.remember(overlay)
+                Component.onDestruction: root.forget(overlay)
+
+                ScriptModel {
+                    id: windowModel
+                    values: root.rows.map(function(row) { return row.address; })
+                    comparisonMode: ObjectComparison.Identity
+                }
+                ScriptModel {
+                    id: shelfModel
+                    values: root.minimized.map(function(chip) { return chip.address; })
+                    comparisonMode: ObjectComparison.Identity
                 }
 
-                MouseArea {
-                  id: minArea
-                  width: 24
-                  height: parent.height
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.minimizeWindow(cluster.geom.address)
+                Repeater {
+                    id: chromeRepeater
+                    model: windowModel
+                    delegate: Item {
+                        id: cluster
+                        required property string modelData
+                        readonly property var geom: root.controlGeom(modelData, overlay.modelData.name)
+                        property var region: null
+                        readonly property string description: (geom.title || "Window") + (geom.class ? " (" + geom.class + ")" : "")
+                        objectName: "chrome:" + modelData
+                        visible: root.fresh && geom.chromeVisible === true
+                        x: geom.x || 0
+                        y: geom.y || 0
+                        width: geom.w || 0
+                        height: geom.h || 0
+                        Component.onCompleted: region = overlay.attach(cluster)
+                        Component.onDestruction: overlay.detach(region)
+                        onXChanged: overlay.pokeMask()
+                        onYChanged: overlay.pokeMask()
+                        onVisibleChanged: overlay.pokeMask()
+                        onWidthChanged: overlay.pokeMask()
+                        onHeightChanged: overlay.pokeMask()
 
-                  Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: 2
-                    radius: 4
-                    color: minArea.containsMouse ? "#33ffffff" : "transparent"
-                  }
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: "—"
-                    color: "#f2f2f2"
-                    font.pixelSize: 13
-                  }
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#f51b2028"
+                            radius: 6
+                            border.color: "#9eabbc"
+                            border.width: 1
+                        }
+                        Row {
+                            anchors.fill: parent
+                            Item {
+                                id: moveGrip
+                                width: cluster.width / 4
+                                height: cluster.height
+                                Accessible.role: Accessible.Grip
+                                Accessible.name: "Move " + cluster.description
+                                property bool hovered: moveArea.containsMouse
+                                QQC.ToolTip.visible: hovered
+                                QQC.ToolTip.text: "Move " + cluster.description
+                                QQC.ToolTip.delay: 600
+                                Text { anchors.centerIn: parent; text: "⋮⋮"; color: "#ffffff"; font.pixelSize: 12 }
+                                MouseArea {
+                                    id: moveArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.SizeAllCursor
+                                    onPressed: function(mouse) {
+                                        var p = mapToGlobal(mouse.x, mouse.y);
+                                        root.beginGesture(cluster.modelData, "move", p.x, p.y, overlay.modelData.name);
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (!pressed) return;
+                                        var p = mapToGlobal(mouse.x, mouse.y);
+                                        root.updateGesture(p.x, p.y);
+                                    }
+                                    onReleased: root.endGesture()
+                                    onCanceled: root.cancelGesture()
+                                }
+                            }
+                            ControlButton {
+                                width: cluster.width / 4; height: cluster.height
+                                label: "—"; help: "Minimize " + cluster.description
+                                targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
+                                onActivated: function(address, identity) { root.action(address, identity, "minimize"); }
+                            }
+                            ControlButton {
+                                width: cluster.width / 4; height: cluster.height
+                                label: cluster.geom.fullscreen ? "❐" : "□"
+                                help: (cluster.geom.fullscreen ? "Restore size of " : "Maximize ") + cluster.description
+                                targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
+                                onActivated: function(address, identity) { root.action(address, identity, "maximize"); }
+                            }
+                            ControlButton {
+                                width: cluster.width / 4; height: cluster.height
+                                label: "×"; help: "Close " + cluster.description; destructive: true
+                                targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
+                                onActivated: function(address, identity) { root.action(address, identity, "close"); }
+                            }
+                        }
+                    }
                 }
 
-                MouseArea {
-                  id: maxArea
-                  width: 24
-                  height: parent.height
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.toggleMaximized(cluster.geom.address)
-
-                  Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: 2
-                    radius: 4
-                    color: maxArea.containsMouse ? "#33ffffff" : "transparent"
-                  }
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: cluster.geom.fullscreen ? "❐" : "□"
-                    color: "#f2f2f2"
-                    font.pixelSize: 13
-                  }
+                Repeater {
+                    id: handleRepeater
+                    model: windowModel
+                    delegate: Item {
+                        id: handle
+                        required property string modelData
+                        readonly property var geom: root.resizeGeom(modelData, overlay.modelData.name)
+                        property var region: null
+                        objectName: "resize:" + modelData
+                        visible: root.fresh && geom.screenName === overlay.modelData.name && geom.handleVisible === true
+                            && (!root.gesture || root.gesture.address !== modelData || root.gesture.kind !== "move")
+                        x: geom.handleX || 0
+                        y: geom.handleY || 0
+                        width: geom.handleW || 0
+                        height: geom.handleH || 0
+                        Accessible.role: Accessible.Grip
+                        Accessible.name: "Resize " + (geom.title || "Window")
+                        Component.onCompleted: region = overlay.attach(handle)
+                        Component.onDestruction: overlay.detach(region)
+                        onVisibleChanged: overlay.pokeMask()
+                        onXChanged: overlay.pokeMask()
+                        onYChanged: overlay.pokeMask()
+                        Text { anchors.right: parent.right; anchors.bottom: parent.bottom; text: "◢"; color: "#ffffff"; font.pixelSize: 16 }
+                        MouseArea {
+                            id: resizeArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.SizeFDiagCursor
+                            QQC.ToolTip.visible: containsMouse
+                            QQC.ToolTip.text: "Resize " + (handle.geom.title || "Window")
+                            QQC.ToolTip.delay: 600
+                            onPressed: function(mouse) {
+                                var p = mapToGlobal(mouse.x, mouse.y);
+                                root.beginGesture(handle.modelData, "resize", p.x, p.y, overlay.modelData.name);
+                            }
+                            onPositionChanged: function(mouse) {
+                                if (!pressed) return;
+                                var p = mapToGlobal(mouse.x, mouse.y);
+                                root.updateGesture(p.x, p.y);
+                            }
+                            onReleased: root.endGesture()
+                            onCanceled: root.cancelGesture()
+                        }
+                    }
                 }
 
-                MouseArea {
-                  id: closeArea
-                  width: 24
-                  height: parent.height
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.closeWindow(cluster.geom.address)
-
-                  Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: 2
-                    radius: 4
-                    color: closeArea.containsMouse ? "#e81123" : "transparent"
-                  }
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: "×"
-                    color: "#f2f2f2"
-                    font.pixelSize: 16
-                  }
+                Repeater {
+                    model: shelfModel
+                    delegate: ControlButton {
+                        id: chip
+                        required property string modelData
+                        readonly property var geom: root.chipFor(modelData)
+                        property var region: null
+                        objectName: "shelf:" + modelData
+                        visible: root.fresh && !root.barHosted(overlay.modelData.name) && geom.screenName === overlay.modelData.name && geom.pageVisible === true
+                        x: geom.x || 0; y: geom.y || 0; width: geom.w || 0; height: geom.h || 0
+                        targetAddress: modelData; targetIdentity: geom.stableId || ""
+                        help: "Restore " + (geom.title || "Window") + (geom.class ? " (" + geom.class + ")" : "")
+                        onActivated: function(address, identity) { root.action(address, identity, "restore"); }
+                        Component.onCompleted: region = overlay.attach(chip)
+                        Component.onDestruction: overlay.detach(region)
+                        onVisibleChanged: overlay.pokeMask()
+                        onXChanged: overlay.pokeMask()
+                        onYChanged: overlay.pokeMask()
+                        Rectangle { anchors.fill: parent; z: -1; radius: 6; color: "#f51b2028"; border.color: "#9eabbc" }
+                        Text {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8; anchors.rightMargin: 8
+                            verticalAlignment: Text.AlignVCenter
+                            text: chip.geom.title || "Window"
+                            textFormat: Text.PlainText
+                            color: "#ffffff"; font.pixelSize: 12; elide: Text.ElideRight
+                        }
+                    }
                 }
-              }
-            }
 
-            function beginDrag(mouse) {
-              var row = geom
-              if (!row.address) return
-              var p = grip.mapToGlobal(mouse.x, mouse.y)
-              dragPressX = p.x
-              dragPressY = p.y
-              dragOriginX = row.atX
-              dragOriginY = row.atY
-              dragChromeX = x
-              dragChromeY = y
-              dragScale = row.scale || 1
-              dragAddress = row.address
-              dragFullscreen = row.fullscreen
-              dragFloating = row.floating
-              dragMoved = false
-              dragCursorX = p.x
-              dragCursorY = p.y
-              dragMonitor = {
-                x: row.monX,
-                y: row.monY,
-                width: row.monW,
-                height: row.monH,
-                reserved: row.reserved
-              }
+                Item {
+                    id: pager
+                    readonly property var geom: overlay.shelf ? overlay.shelf.pager : null
+                    property var region: null
+                    visible: root.fresh && !root.barHosted(overlay.modelData.name) && geom !== null
+                    x: geom ? geom.x : 0; y: geom ? geom.y : 0
+                    width: geom ? geom.w : 0; height: geom ? geom.h : 0
+                    Component.onCompleted: region = overlay.attach(pager)
+                    Component.onDestruction: overlay.detach(region)
+                    onVisibleChanged: overlay.pokeMask()
+                    onXChanged: overlay.pokeMask()
+                    onYChanged: overlay.pokeMask()
+                    Rectangle { anchors.fill: parent; radius: 6; color: "#f51b2028"; border.color: "#9eabbc" }
+                    ControlButton {
+                        anchors.left: parent.left; height: parent.height; width: Math.min(36, parent.width / 3)
+                        label: "‹"; help: "Previous minimized windows"
+                        enabled: overlay.shelf && overlay.shelf.page > 0
+                        opacity: enabled ? 1 : 0.4
+                        onActivated: root.setPage(overlay.modelData.name, -1)
+                    }
+                    Text {
+                        anchors.centerIn: parent
+                        width: Math.max(0, parent.width - Math.min(36, parent.width / 3) * 2 - 4)
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        text: overlay.shelf ? (overlay.shelf.page + 1) + " / " + overlay.shelf.pages : ""
+                        color: "#ffffff"; font.pixelSize: 11
+                    }
+                    ControlButton {
+                        anchors.right: parent.right; height: parent.height; width: Math.min(36, parent.width / 3)
+                        label: "›"; help: "Next minimized windows"
+                        enabled: overlay.shelf && overlay.shelf.page + 1 < overlay.shelf.pages
+                        opacity: enabled ? 1 : 0.4
+                        onActivated: root.setPage(overlay.modelData.name, 1)
+                    }
+                }
             }
-
-            function endDrag() {
-              if (dragMoved) root.finishDrag(dragAddress, dragCursorX, dragCursorY, dragMonitor)
-              root.clearDrag(dragAddress)
-            }
-
-            function drag(mouse) {
-              if (!dragAddress) return
-              var p = grip.mapToGlobal(mouse.x, mouse.y)
-              var dx = p.x - dragPressX
-              var dy = p.y - dragPressY
-              if (!dragMoved) {
-                if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return
-                dragMoved = true
-                if (dragFullscreen) root.unsetFullscreen(dragAddress)
-                if (!dragFloating) root.floatOn(dragAddress)
-              }
-              dragCursorX = p.x
-              dragCursorY = p.y
-              root.setDrag(dragAddress, dragChromeX + dx, dragChromeY + dy)
-              root.moveTo(dragAddress, dragOriginX + dx * dragScale, dragOriginY + dy * dragScale)
-            }
-
-            property real dragPressX: 0
-            property real dragPressY: 0
-            property real dragOriginX: 0
-            property real dragOriginY: 0
-            property real dragChromeX: 0
-            property real dragChromeY: 0
-            property real dragScale: 1
-            property string dragAddress: ""
-            property int dragFullscreen: 0
-            property bool dragFloating: false
-            property bool dragMoved: false
-            property real dragCursorX: 0
-            property real dragCursorY: 0
-            property var dragMonitor: null
-          }
         }
-
-        Repeater {
-          model: root.slotCount
-
-          delegate: Item {
-            id: handle
-            required property int index
-            readonly property var grip: root.handleGeom(overlay.modelData.name, index)
-
-            visible: grip.address !== ""
-            x: grip.x
-            y: grip.y
-            width: grip.w
-            height: grip.h
-
-            MouseArea {
-              id: handleArea
-              anchors.fill: parent
-              cursorShape: Qt.SizeFDiagCursor
-              onPressed: function(mouse) { handle.beginResize(mouse) }
-              onPositionChanged: function(mouse) { if (pressed) handle.doResize(mouse) }
-
-              Text {
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                text: "◢"
-                color: "#f2f2f2"
-                font.pixelSize: 14
-              }
-            }
-
-            function beginResize(mouse) {
-              if (!grip.address) return
-              var p = handleArea.mapToGlobal(mouse.x, mouse.y)
-              resizePressX = p.x
-              resizePressY = p.y
-              resizeOriginX = grip.atX
-              resizeOriginY = grip.atY
-              resizeOriginW = grip.winW
-              resizeOriginH = grip.winH
-              resizeScale = grip.scale || 1
-              resizeAddress = grip.address
-              if (grip.fullscreen) root.unsetFullscreen(grip.address)
-              if (!grip.floating) root.floatOn(grip.address)
-            }
-
-            function doResize(mouse) {
-              if (!resizeAddress) return
-              var p = handleArea.mapToGlobal(mouse.x, mouse.y)
-              var dw = (p.x - resizePressX) * resizeScale
-              var dh = (p.y - resizePressY) * resizeScale
-              root.resizeWindow(resizeAddress, resizeOriginX, resizeOriginY, resizeOriginW + dw, resizeOriginH + dh)
-            }
-
-            property real resizePressX: 0
-            property real resizePressY: 0
-            property real resizeOriginX: 0
-            property real resizeOriginY: 0
-            property real resizeOriginW: 0
-            property real resizeOriginH: 0
-            property real resizeScale: 1
-            property string resizeAddress: ""
-          }
-        }
-
-        Repeater {
-          model: root.slotCount
-
-          delegate: Item {
-            id: shelfItem
-            required property int index
-            readonly property var geom: root.chipGeom(overlay.modelData.name, index)
-
-            visible: geom.address !== ""
-            x: geom.x
-            y: geom.y
-            width: geom.w
-            height: geom.h
-
-            Rectangle {
-              anchors.fill: parent
-              radius: 6
-              color: "#e61c1c1c"
-              border.color: "#66ffffff"
-              border.width: 1
-
-              Text {
-                anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                verticalAlignment: Text.AlignVCenter
-                text: shelfItem.geom.title
-                textFormat: Text.PlainText
-                color: "#f2f2f2"
-                font.pixelSize: 12
-                elide: Text.ElideRight
-              }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.restoreWindow(shelfItem.geom.address)
-            }
-          }
-        }
-      }
     }
-  }
 }
