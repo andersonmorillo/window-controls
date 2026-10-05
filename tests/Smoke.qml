@@ -32,6 +32,7 @@ ShellRoot {
         property string position: "top"
         property bool vertical: false
         property int barSize: 32
+        property var layoutConfig: ({ center: ["clock", { id: "indicators" }] })
         property var clickTargets: []
         function registerClickTarget(target) {
             if (clickTargets.indexOf(target) < 0) clickTargets = clickTargets.concat([target]);
@@ -58,6 +59,55 @@ ShellRoot {
                 item.moduleName = "li.window-controls";
                 item.settings = { maxWidth: 240 };
             }
+        }
+    }
+
+    // Public ModuleSlot geometry can be exercised without a native window.
+    // The fixture mirrors the host's independently positioned center row.
+    Item {
+        id: hostScene
+        width: fakeBar.vertical ? 32 : 1536
+        height: fakeBar.vertical ? 1536 : 32
+        Item {
+            id: leftSlot
+            property string region: "left"
+            property string moduleName: "li.window-controls"
+            property var entry: ({ id: moduleName })
+            x: fakeBar.vertical ? 0 : 188
+            y: fakeBar.vertical ? 188 : 0
+            width: hostedBarLoader.item ? hostedBarLoader.item.implicitWidth : 0
+            height: hostedBarLoader.item ? hostedBarLoader.item.implicitHeight : 0
+            Loader {
+                id: hostedBarLoader
+                active: false
+                sourceComponent: Component {
+                    Plugin.BarWidget {
+                        testScreenName: suite.screenName
+                        testScreenWidth: 1536
+                        testScreenHeight: 1536
+                    }
+                }
+                onLoaded: { item.bar = fakeBar; item.settings = {}; }
+            }
+        }
+        Item {
+            property string region: "center"
+            property string moduleName: "clock"
+            x: fakeBar.vertical ? 0 : 699
+            y: fakeBar.vertical ? 699 : 0
+            width: fakeBar.vertical ? 32 : 100
+            height: fakeBar.vertical ? 100 : 32
+        }
+        Item {
+            id: indicatorsSlot
+            property string regionName: "center"
+            property var entry: ({ id: "indicators" })
+            property real leading: 531
+            visible: false
+            x: fakeBar.vertical ? 0 : leading
+            y: fakeBar.vertical ? leading : 0
+            width: fakeBar.vertical ? 32 : 168
+            height: fakeBar.vertical ? 168 : 32
         }
     }
     FloatingWindow {
@@ -112,6 +162,39 @@ ShellRoot {
                 && command.indexOf('mode = "maximized"') >= 0
                 && command.indexOf('action = "set"') >= 0;
         }), "bar maximize toggled or targeted a different window");
+    }
+
+    function checkBarBounds(widget, budget, label) {
+        var state = widget.status();
+        check(widget.width > 0 && widget.height > 0
+            && (widget.vertical ? widget.height <= budget + 0.01 && widget.width <= fakeBar.barSize
+                : widget.width <= budget + 0.01 && widget.height <= fakeBar.barSize),
+            label + " exceeds the available bar space");
+        check(state.entries.length === widget.diagnosticAddresses.length,
+            label + " omits rendered entry diagnostics");
+        var previousRight = 0;
+        state.entries.forEach(function(entry) {
+            check(entry.title && entry.maximize && entry.title.w > 0 && entry.maximize.w > 0,
+                label + " loses a title or maximize affordance");
+            var title = widget.buttonFor(entry.address);
+            var maximize = widget.maximizeButtonFor(entry.address);
+            [title, maximize].forEach(function(target) {
+                [[0, 0], [target.width, 0], [0, target.height], [target.width, target.height]].forEach(function(corner) {
+                    var point = target.mapToItem(widget, corner[0], corner[1]);
+                    check(point.x >= -0.01 && point.y >= -0.01 && point.x <= widget.width + 0.01 && point.y <= widget.height + 0.01,
+                        label + " clips " + target.objectName + " corner " + JSON.stringify(point)
+                            + " outside " + widget.width + "x" + widget.height
+                            + "; content=" + target.parent.parent.x + "," + target.parent.parent.y
+                            + " " + target.parent.parent.width + "x" + target.parent.parent.height
+                            + "; loader=" + widget.parent.width + "x" + widget.parent.height);
+                });
+            });
+            if (!widget.vertical) {
+                check(entry.title.x >= previousRight - 0.01 && entry.maximize.x >= entry.title.x + entry.title.w - 0.01,
+                    label + " overlaps targets");
+                previousRight = entry.maximize.x + entry.maximize.w;
+            }
+        });
     }
 
     function run() {
@@ -327,6 +410,15 @@ ShellRoot {
                 var titleButton = widget.buttonFor(address);
                 return titleButton !== null && titleButton.activeWindow === (address === "0x1064");
             }), "bar focus indicators do not match authoritative window metadata");
+            // A desktop-width bar should show useful density even when many
+            // windows need pagination. Restore the narrow fixture afterwards.
+            widget.testScreenWidth = 1920;
+            widget.settings = { maxWidth: 640, chipWidth: 96, minChipWidth: 72 };
+            check(widget.diagnosticAddresses.length >= 5,
+                "desktop-width bar shows only " + widget.diagnosticAddresses.length + " of 24 window titles; expected at least five");
+            checkBarBounds(widget, 1920 * 0.30, "desktop-width paged bar");
+            widget.testScreenWidth = 480;
+            widget.settings = { maxWidth: 240 };
             check(widget.layout.pages > 1 && widget.diagnosticAddresses.length > 0, "native bar overflow lacks visible pagination");
             check(widget.implicitWidth <= 240 && widget.implicitHeight <= fakeBar.barSize, "bar widget exceeds its configured width or bar height");
             var fallbackStatus = JSON.parse(panel.status()).chips;
@@ -533,7 +625,101 @@ ShellRoot {
             check(bridge.widgets.length === 0 && bridge.hostedScreens.length === 0, "bar teardown leaked hosted screens");
             check(fakeBar.clickTargets.length === 0, "bar teardown leaked host click targets");
             check(!panel.barHosted(screenName) && !panel.barHosted("qa-other"), "empty service still suppresses restoration fallbacks");
-            console.log("window-controls QML smoke passed: masks, gestures, identities, all-window bar, focus, explicit maximize, restore confirmation, queued-action cancellation and lifecycle");
+            // Use the real Panel/Service pipeline for a common six-window
+            // desktop after the original multi-monitor lifecycle checks.
+            panel.testScreens = [{ name: screenName, width: 1600, height: 900 }];
+            data.monitors = [{ id: 0, name: screenName, x: 0, y: 0, width: 1600, height: 900,
+                scale: 1, transform: 0, reserved: [0, 32, 0, 0], activeWorkspace: { name: "dev team" } }];
+            data.clients = [];
+            for (var dense = 200; dense < 206; dense++) data.clients.push(windowClient(dense, false));
+            data.activeWindow = { address: data.clients[0].address };
+            load();
+            primaryBarLoader.active = true;
+        } else if (phase === 27) {
+            primaryBarLoader.item.testScreenWidth = 1600;
+            primaryBarLoader.item.settings = {};
+            load();
+        } else if (phase === 28) {
+            var sixWindowBar = primaryBarLoader.item;
+            check(sixWindowBar.allAddresses.length === 6 && sixWindowBar.diagnosticAddresses.length === 6
+                && sixWindowBar.layout.pages === 1,
+                "default 1600-pixel bar must show all six open-window titles on one page");
+            checkBarBounds(sixWindowBar, 1600 * 0.30, "six-window default bar");
+            check(fakeBar.clickTargets.length === 14 && bridge.widgets.length === 1,
+                "density fixture lost title/maximize targets or widget registration");
+            data.clients = data.clients.slice(0, 4);
+            panel.testScreens = [{ name: screenName, width: 1440, height: 900 }];
+            data.monitors[0].width = 1440;
+            sixWindowBar.testScreenWidth = 1440;
+            load();
+        } else if (phase === 29) {
+            var fourWindowBar = primaryBarLoader.item;
+            check(fourWindowBar.allAddresses.length === 4 && fourWindowBar.diagnosticAddresses.length === 4
+                && fourWindowBar.layout.pages === 1,
+                "default 1440-pixel bar must show all four open-window titles on one page");
+            checkBarBounds(fourWindowBar, 1440 * 0.30, "four-window default bar");
+            primaryBarLoader.active = false;
+        } else if (phase === 30) {
+            check(bridge.widgets.length === 0 && bridge.hostedScreens.length === 0 && fakeBar.clickTargets.length === 0,
+                "density widget teardown leaked service ownership or host targets");
+            panel.testScreens = [{ name: screenName, width: 1536, height: 900 }];
+            data.monitors[0].width = 1536;
+            data.clients[0].workspace = { name: "special:li-window-controls" };
+            data.clients[0].visible = false;
+            load();
+            hostedBarLoader.active = true;
+        } else if (phase === 31) {
+            var clockBar = hostedBarLoader.item;
+            check(clockBar.hostSlot === leftSlot && clockBar.availableWidth === 495,
+                "native bar did not derive public clock geometry from its ModuleSlot scene");
+            check(Math.abs(clockBar.maxWidth - 460.8) < 0.01,
+                "clock-only host budget did not retain the conservative screen cap");
+            check(clockBar.diagnosticAddresses.length === 4 && clockBar.layout.pages === 1 && panel.barHosted(screenName),
+                "clock-only host omitted current windows or its bar ownership");
+            checkBarBounds(clockBar, 460.8, "clock-only host bar");
+            indicatorsSlot.visible = true;
+        } else if (phase === 32) {
+            var indicatorBar = hostedBarLoader.item;
+            check(indicatorBar.availableWidth === 327 && indicatorBar.maxWidth === 327,
+                "revealed center indicators did not shrink the available window-list budget");
+            check(indicatorBar.diagnosticAddresses.length === 4 && indicatorBar.layout.pages === 1,
+                "four entries should fit beside the revealed clock indicators");
+            checkBarBounds(indicatorBar, 327, "indicator-clamped host bar");
+            check(indicatorBar.diagnosticAddresses.every(function(address) {
+                return indicatorBar.maximizeButtonFor(address).width === 24;
+            }), "adaptive density unnecessarily shrank the maximize affordance");
+            indicatorsSlot.leading = 188;
+        } else if (phase === 33) {
+            var blockedBar = hostedBarLoader.item;
+            check(blockedBar.availableWidth === 0 && blockedBar.maxWidth === 0 && !blockedBar.visible && blockedBar.implicitWidth === 0,
+                "zero host space still renders a window list over the center modules");
+            check(bridge.widgets.length === 0 && !panel.barHosted(screenName),
+                "zero host space retains bar ownership and suppresses its fallback");
+            check(JSON.parse(panel.status()).chips.some(function(chip) { return chip.screen === screenName && chip.visible; }),
+                "zero host space makes the minimized window unreachable");
+            indicatorsSlot.visible = false;
+        } else if (phase === 34) {
+            var recoveredBar = hostedBarLoader.item;
+            check(Math.abs(recoveredBar.maxWidth - 460.8) < 0.01 && recoveredBar.visible && bridge.widgets.length === 1
+                && panel.barHosted(screenName), "host space recovery did not reattach the same widget");
+            check(!JSON.parse(panel.status()).chips.some(function(chip) { return chip.screen === screenName && chip.visible; }),
+                "recovered bar duplicates its overlay restore fallback");
+            checkBarBounds(recoveredBar, 460.8, "recovered host bar");
+            fakeBar.vertical = true;
+            fakeBar.position = "left";
+            indicatorsSlot.leading = 531;
+            indicatorsSlot.visible = true;
+        } else if (phase === 35) {
+            var verticalBar = hostedBarLoader.item;
+            check(verticalBar.vertical && verticalBar.availableWidth === 327 && verticalBar.maxWidth === 327
+                && verticalBar.diagnosticAddresses.length === 4 && verticalBar.layout.pages === 1,
+                "vertical bar did not derive its available space along the column axis");
+            checkBarBounds(verticalBar, 327, "vertical indicator-clamped bar");
+            hostedBarLoader.active = false;
+        } else if (phase === 36) {
+            check(bridge.widgets.length === 0 && bridge.hostedScreens.length === 0 && fakeBar.clickTargets.length === 0,
+                "host geometry widget teardown leaked service ownership or host targets");
+            console.log("window-controls QML smoke passed: masks, gestures, identities, all-window bar, adaptive density, focus, explicit maximize, restore confirmation, queued-action cancellation and lifecycle");
             Qt.quit();
         }
         phase++;

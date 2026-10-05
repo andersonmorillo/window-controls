@@ -9,7 +9,7 @@ Corner buttons for Omarchy windows. Drag a window from the grip, resize it from 
 - A drag or resize starts after the pointer moves at least four logical pixels. Clicking the resize handle alone does not change the window's layout.
 - Minimized windows use `special:li-window-controls`. Other special workspaces remain independent.
 - Original workspaces are saved outside the plugin directory and restored after plugin reloads or shell restarts. Saved records are checked against live window identities.
-- Controls have no fixed window-count limit. Open windows appear on their monitor's status bar, with pages when more titles exist than fit. Click a title to focus it or restore it to its original workspace. Click its separate square button to maximize it; minimized windows restore before maximizing. The focused window is highlighted. The widget uses the bar's theme and stays compact to leave room for the clock and other widgets.
+- Controls have no fixed window-count limit. Open windows appear on their monitor's status bar. Titles shrink to fit more windows together, and pages appear when the list still exceeds the available space. Click a title to focus it or restore it to its original workspace. Click its separate square button to maximize it; minimized windows restore before maximizing. The focused window is highlighted. The widget uses the bar's theme and leaves space for the clock and other widgets. Hover a shortened title to read its full name.
 - Button presses retain their original window target. Controls that would obstruct a foreground window are suppressed using the compositor's focus and window-state information.
 - Full-title and action tooltips describe the controls. Compact controls fit smaller windows.
 
@@ -43,8 +43,10 @@ omarchy bar put li.window-controls --after omarchy.workspaces
 You can move it through the bar's normal layout controls or change its maximum width:
 
 ```bash
-omarchy bar set li.window-controls maxWidth 360 --json
+omarchy bar set li.window-controls maxWidth 640 --json
 ```
+
+Window entries prefer 96 logical pixels and can shrink to 72 pixels when needed. The maximum width is also limited by the display and available space before the center widgets. You can adjust the entry widths with `chipWidth` and `minChipWidth` through the same bar settings command.
 
 ## Development and checks
 

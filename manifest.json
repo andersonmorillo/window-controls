@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "li.window-controls",
   "name": "Window Controls",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "li",
   "description": "Corner buttons to move, resize, minimize, restore, maximize, and close a window.",
   "kinds": ["panel", "service", "bar-widget"],
@@ -18,9 +18,11 @@
     "category": "Windows",
     "allowMultiple": false,
     "defaultSection": "left",
-    "defaults": { "maxWidth": 360 },
+    "defaults": { "maxWidth": 640, "chipWidth": 96, "minChipWidth": 72 },
     "schema": [
-      { "key": "maxWidth", "type": "number", "label": "Maximum width" }
+      { "key": "maxWidth", "type": "number", "label": "Maximum width" },
+      { "key": "chipWidth", "type": "number", "label": "Preferred window width" },
+      { "key": "minChipWidth", "type": "number", "label": "Minimum window width" }
     ]
   }
 }

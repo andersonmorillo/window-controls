@@ -125,7 +125,7 @@ Item {
     }
 
     function status() {
-        return JSON.stringify({ version: "1.3.0", windows: windows.length, minimized: minimized.length,
+        return JSON.stringify({ version: "1.4.0", windows: windows.length, minimized: minimized.length,
             shelves: shelves, poll: lastPoll, error: lastError,
             barWidgets: sharedService ? sharedService.widgetStatus() : [],
             validAgeMs: lastValidAt ? Math.max(0, Date.now() - lastValidAt) : null,

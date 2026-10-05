@@ -24,15 +24,16 @@ function chipsFor(minimized, screenName) {
 
 // Navigation and chips share a fixed budget. Keeping paginated width stable
 // prevents a short final page from moving neighboring clock/status widgets.
-function layout(count, maxWidth, chipWidth, gap, page) {
+function layout(count, maxWidth, chipWidth, gap, page, minChipWidth) {
   var n = finite(count) && count > 0 ? Math.floor(count) : 0
   var budget = positive(maxWidth, 0)
   var empty = { items: [], page: 0, pages: 1, capacity: 0, width: 0, previous: null, next: null, counter: null }
   if (!n || !budget) return empty
   var desiredW = positive(chipWidth, 112)
+  var minimumW = Math.min(desiredW, positive(minChipWidth, desiredW))
   var spacing = Math.min(finite(gap) && gap >= 0 ? gap : 4, budget / 16)
-  var unpagedCapacity = Math.max(1, Math.floor((budget + spacing) / (desiredW + spacing)))
-  var capacity = unpagedCapacity
+  var unpagedCapacity = Math.max(1, Math.floor((budget + spacing) / (minimumW + spacing)))
+  var capacity = Math.min(n, unpagedCapacity)
   var previous = null, next = null, counter = null
   var itemSpace = budget
   var itemStart = 0
@@ -41,7 +42,7 @@ function layout(count, maxWidth, chipWidth, gap, page) {
     var navigationW = Math.min(22, budget / 5)
     var counterW = Math.min(32, budget / 4)
     itemSpace = budget - navigationW * 2 - counterW - spacing * 3
-    capacity = Math.max(1, Math.floor((itemSpace + spacing) / (desiredW + spacing)))
+    capacity = Math.max(1, Math.floor((itemSpace + spacing) / (minimumW + spacing)))
     itemStart = navigationW + spacing
     previous = { x: 0, w: navigationW }
     next = { x: itemStart + itemSpace + spacing, w: navigationW }

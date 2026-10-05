@@ -31,16 +31,21 @@ Item {
     readonly property real screenExtent: vertical
         ? (testScreenHeight > 0 ? testScreenHeight : attachedScreen && attachedScreen.height > 0 ? attachedScreen.height : 720)
         : (testScreenWidth > 0 ? testScreenWidth : attachedScreen && attachedScreen.width > 0 ? attachedScreen.width : 1280)
-    readonly property real maxWidth: Math.max(1, Math.min(BarModel.positive(Number(setting("maxWidth", 360)), 360), screenExtent / 4))
+    readonly property real budgetWidth: Math.max(1, Math.min(BarModel.positive(Number(setting("maxWidth", 640)), 640), screenExtent * 0.30))
+    readonly property var hostSlot: enclosingSlot()
+    readonly property var sceneRoot: commonSceneRoot()
+    readonly property real availableWidth: centerSpace()
+    readonly property real maxWidth: availableWidth < 0 ? budgetWidth : Math.min(budgetWidth, availableWidth)
     readonly property bool fresh: service && service.fresh === true
     readonly property var chips: BarModel.chipsFor(service ? service.windows : [], screenName)
     readonly property var displayChips: frozenChips !== null ? frozenChips : chips
     readonly property var layout: BarModel.layout(displayChips.length, maxWidth,
-        BarModel.positive(Number(setting("chipWidth", 112)), 112), 4, page)
+        BarModel.positive(Number(setting("chipWidth", 96)), 96), 4, page,
+        BarModel.positive(Number(setting("minChipWidth", 72)), 72))
     readonly property var diagnosticAddresses: layout.items.map(function(item) { return displayChips[item.index].address; })
     readonly property var allAddresses: chips.map(function(chip) { return chip.address; })
 
-    visible: fresh && chips.length > 0
+    visible: fresh && chips.length > 0 && layout.width > 0
     implicitWidth: visible ? (vertical ? barSize : layout.width) : 0
     implicitHeight: visible ? (vertical ? layout.width : barSize) : 0
     clip: true
@@ -50,10 +55,74 @@ Item {
         return value === undefined || value === null ? fallback : value;
     }
 
+    function slotRegion(item) {
+        if ("region" in item && typeof item.region === "string") return item.region;
+        return "regionName" in item && typeof item.regionName === "string" ? item.regionName : "";
+    }
+
+    function slotId(item) {
+        if ("moduleName" in item && typeof item.moduleName === "string") return item.moduleName;
+        var entry = "entry" in item ? item.entry : null;
+        return typeof entry === "string" ? entry : entry && typeof entry.id === "string" ? entry.id : "";
+    }
+
+    function enclosingSlot() {
+        for (var item = parent; item; item = item.parent) {
+            if (slotRegion(item) && slotId(item) === moduleName) return item;
+        }
+        return null;
+    }
+
+    function commonSceneRoot() {
+        var item = root;
+        while (item.parent) item = item.parent;
+        return item;
+    }
+
+    function leadingPosition(item) {
+        var offset = 0;
+        for (var current = item; current && current !== sceneRoot; current = current.parent)
+            offset += vertical ? current.y : current.x;
+        return offset;
+    }
+
+    // The host anchors its center independently of the left Row/Column and
+    // provides no remaining-space property. Read only public scene geometry;
+    // ancestor positions make clock/indicator changes reactive. Skip slot
+    // subtrees so our own implicit size cannot feed back into this binding.
+    function centerSpace() {
+        if (!hostSlot || slotRegion(hostSlot) !== "left" || !bar || !("layoutConfig" in bar)) return -1;
+        var entries = bar.layoutConfig ? bar.layoutConfig.center : null;
+        if (!Array.isArray(entries) || !entries.length) return -1;
+        var ids = [];
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            var id = typeof entry === "string" ? entry : entry && typeof entry.id === "string" ? entry.id : "";
+            if (id) ids.push(id);
+        }
+        var leading = Infinity;
+        function visit(item) {
+            if (item === hostSlot) return;
+            var region = root.slotRegion(item);
+            var id = root.slotId(item);
+            if (region && id) {
+                if (region === "center" && ids.indexOf(id) >= 0 && item.visible && item.width > 0 && item.height > 0)
+                    leading = Math.min(leading, root.leadingPosition(item));
+                return;
+            }
+            if (!item.visible) return;
+            var children = item.children;
+            for (var child = 0; child < children.length; child++) visit(children[child]);
+        }
+        visit(sceneRoot);
+        return isFinite(leading) ? Math.max(0, leading - leadingPosition(hostSlot) - 16) : -1;
+    }
+
     function syncRegistration() {
-        if (!ready || registeredService === service) return;
+        var target = maxWidth > 0 ? service : null;
+        if (!ready || registeredService === target) return;
         if (registeredService && typeof registeredService.detachWidget === "function") registeredService.detachWidget(root);
-        registeredService = service;
+        registeredService = target;
         if (registeredService && typeof registeredService.attachWidget === "function") registeredService.attachWidget(root);
     }
 
@@ -136,11 +205,13 @@ Item {
         }
         return { screen: screenName, x: x, y: y, globalX: point.x, globalY: point.y,
             w: width, h: height, visible: visible, fresh: fresh, vertical: vertical,
+            budgetWidth: budgetWidth, availableWidth: availableWidth, maxWidth: maxWidth,
             page: layout.page, pages: layout.pages, addresses: diagnosticAddresses,
             allAddresses: allAddresses, total: chips.length, entries: entries, registered: registeredService !== null };
     }
 
     onServiceChanged: { frozenChips = null; syncRegistration(); }
+    onMaxWidthChanged: syncRegistration()
     onScreenNameChanged: {
         frozenChips = null;
         if (registeredService && typeof registeredService.widgetsChanged === "function") registeredService.widgetsChanged();
@@ -292,7 +363,10 @@ Item {
         id: content
         width: root.layout.width
         height: root.barSize
-        anchors.centerIn: parent
+        // Preserve fractional centers while the host changes the slot size;
+        // rounded or deferred anchors can clip the horizontal/rotated row.
+        x: (root.width - width) / 2
+        y: (root.height - height) / 2
         rotation: root.vertical ? 90 : 0
 
         ScriptModel {
@@ -310,7 +384,7 @@ Item {
                 readonly property var metadata: root.metadataFor(modelData)
                 readonly property var placement: root.placementFor(modelData)
                 readonly property var currentMetadata: root.currentMetadataFor(modelData)
-                readonly property real maximizeWidth: Math.min(24, width / 3)
+                readonly property real maximizeWidth: Math.min(24, width / 2)
                 readonly property string identity: metadata ? metadata.stableId || "" : ""
                 readonly property bool current: root.fresh && currentMetadata !== null && currentMetadata.stableId === identity
                 property alias titleButton: titleTarget
