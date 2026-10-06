@@ -714,7 +714,7 @@ Item {
                                 Accessible.name: "Move " + cluster.description
                                 property bool hovered: moveArea.containsMouse
                                 QQC.ToolTip.visible: hovered
-                                QQC.ToolTip.text: "Move " + cluster.description
+                                QQC.ToolTip.text: Controls.tooltipText("Move " + cluster.description)
                                 QQC.ToolTip.delay: 600
                                 Text { anchors.centerIn: parent; text: "⋮⋮"; color: "#ffffff"; font.pixelSize: 12 }
                                 MouseArea {
@@ -787,7 +787,7 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.SizeFDiagCursor
                             QQC.ToolTip.visible: containsMouse
-                            QQC.ToolTip.text: "Resize " + (handle.geom.title || "Window")
+                            QQC.ToolTip.text: Controls.tooltipText("Resize " + (handle.geom.title || "Window"))
                             QQC.ToolTip.delay: 600
                             onPressed: function(mouse) {
                                 var p = mapToGlobal(mouse.x, mouse.y);

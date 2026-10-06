@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "li.window-controls",
   "name": "Window Controls",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "author": "li",
   "description": "Corner buttons to move, resize, minimize, restore, maximize, and close a window.",
   "kinds": ["panel", "service", "bar-widget"],

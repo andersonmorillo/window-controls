@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls as QQC
+import "Controls.js" as Controls
 
 Item {
     id: button
@@ -18,7 +19,7 @@ Item {
     Accessible.name: help || label
     Accessible.onPressAction: activated(targetAddress, targetIdentity)
     QQC.ToolTip.visible: hovered && help !== ""
-    QQC.ToolTip.text: help
+    QQC.ToolTip.text: Controls.tooltipText(help)
     QQC.ToolTip.delay: 600
     QQC.ToolTip.timeout: 8000
 

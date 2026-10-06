@@ -3,7 +3,20 @@ const path = require("path")
 const assert = require("assert/strict")
 
 const src = fs.readFileSync(path.join(__dirname, "Controls.js"), "utf8").replace(/^\.pragma library\s*/, "")
-const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, appName, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout }")()
+const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, appName, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout, tooltipText }")()
+
+// Foreign titles/classes must remain literal even in Qt's rich-text tooltip.
+assert.equal(api.tooltipText('<img src="http://127.0.0.1:9/probe"> & <b>東京</b>'),
+  '<qt>&lt;img src=&quot;http://127.0.0.1:9/probe&quot;&gt; &amp; &lt;b&gt;東京&lt;/b&gt;</qt>')
+assert.equal(api.tooltipText('&lt;img src=x&gt;'), '<qt>&amp;lt;img src=x&amp;gt;</qt>')
+assert.equal(api.tooltipText("line 1\nline 2's"), '<qt>line 1<br>line 2&#39;s</qt>')
+assert.equal(api.tooltipText(null), '<qt></qt>')
+for (const file of ["Panel.qml", "ControlButton.qml"]) {
+  const qml = fs.readFileSync(path.join(__dirname, file), "utf8")
+  const sinks = [...qml.matchAll(/QQC\.ToolTip\.text:\s*(.*)/g)]
+  assert.equal(sinks.length, file === "Panel.qml" ? 2 : 1, "cover every Qt tooltip sink")
+  for (const sink of sinks) assert.match(sink[1], /^Controls\.tooltipText\(/, file + " tooltip escapes metadata")
+}
 
 const visible = { mapped: true, hidden: false, visible: true, at: [324, 38], size: [718, 718] }
 assert.equal(api.showable(visible), true, "visible mapped window")

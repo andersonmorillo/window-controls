@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls as QQC
 import Quickshell
 import ".." as Plugin
 
@@ -128,10 +129,20 @@ ShellRoot {
         if (!condition) throw new Error(message);
     }
 
+    function checkLiteralTooltip(item, expected) {
+        var tip = item.QQC.ToolTip.toolTip;
+        tip.text = item.QQC.ToolTip.text;
+        var label = Qt.createQmlObject('import QtQuick; TextEdit { textFormat: TextEdit.RichText }', tip);
+        label.text = tip.contentItem.text;
+        var shown = label.getText(0, label.length);
+        label.destroy();
+        check(shown === expected, "tooltip interpreted application metadata: " + shown);
+    }
+
     function windowClient(index, minimized) {
         return { address: "0x" + (4096 + index).toString(16), pid: 1000 + index,
             stableId: "native-" + index, class: "qa", initialClass: "qa",
-            title: "Window " + index + " ---MON--- ---MONITORS--- <plain text>",
+            title: "Window " + index + ' <img src="http://127.0.0.1:9/tooltip-probe"> &lt;b&gt; <b>東京</b>',
             mapped: true, visible: !minimized, hidden: false, floating: false,
             fullscreen: 0, focusHistoryID: index, monitor: 0,
             workspace: { id: minimized ? -99 : 1, name: minimized ? "special:li-window-controls" : "dev team" },
@@ -238,6 +249,11 @@ ShellRoot {
             check(surface.regionCount === 31, "dynamic mask incomplete: " + surface.regionCount);
             originalCluster = surface.clusterFor("0x1000");
             check(originalCluster !== null, "address delegate missing");
+            var controls = originalCluster.children[1].children;
+            checkLiteralTooltip(controls[0], "Move " + originalCluster.description);
+            checkLiteralTooltip(controls[1], controls[1].help);
+            var resizeArea = surface.handleFor("0x1000").children[1];
+            checkLiteralTooltip(resizeArea, "Resize " + originalCluster.geom.title);
             data.clients.reverse();
             data.clients[14].at = [8, 36];
             load();

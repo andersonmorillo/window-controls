@@ -1,5 +1,14 @@
 .pragma library
 
+// Qt tooltip labels accept rich text. Escape the complete string at the sink;
+// the fixed wrapper also makes entity-only labels render consistently.
+function tooltipText(value) {
+  var text = value === undefined || value === null ? "" : String(value)
+  return "<qt>" + text.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+    .replace(/\r\n|\r|\n/g, "<br>") + "</qt>"
+}
+
 function showable(client) {
   if (!client || client.mapped !== true || onShelf(client)) return false
   if (client.hidden === true || client.visible !== true) return false
