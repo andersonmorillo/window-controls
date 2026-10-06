@@ -41,10 +41,38 @@ function luaString(value) {
   }) + '"'
 }
 
+function plainLabel(value) {
+  return value ? String(value).replace(/\s+/g, " ").trim() : ""
+}
+
 function windowLabel(client) {
-  var title = client && client.title ? String(client.title).replace(/\s+/g, " ").trim() : ""
-  var klass = client && client.class ? String(client.class).trim() : ""
-  return title || klass || "Window"
+  return plainLabel(client && client.title) || plainLabel(client && client.class) || "Window"
+}
+
+// Bar chips name the application, not the document or task in its title.
+function appName(client) {
+  var klass = plainLabel(client && (client.initialClass || client.class))
+  var initial = plainLabel(client && client.initialTitle)
+  var title = plainLabel(client && client.title)
+  if (/^(brave|chrome|chromium|google-chrome)-/i.test(klass) || klass.indexOf("__-") >= 0) {
+    if (initial && !/[\\/|]/.test(initial) && initial.length <= 48) return initial
+    return displayName(klass.replace(/__-.*$/, "").split("-")[0]) || title || "Window"
+  }
+  return prettyClass(klass) || initial || title || "Window"
+}
+
+function prettyClass(klass) {
+  var parts = plainLabel(klass).replace(/__-.*$/, "").split(".").filter(Boolean)
+  if (!parts.length) return ""
+  var dns = { com: 1, org: 1, io: 1, net: 1, app: 1, dev: 1, me: 1, name: 1 }
+  var segment = parts.length > 1 && !dns[parts[0].toLowerCase()] ? parts[0] : parts[parts.length - 1]
+  return displayName(segment)
+}
+
+function displayName(segment) {
+  segment = plainLabel(segment).replace(/[-_]+/g, " ")
+  if (!segment) return ""
+  return segment.charAt(0).toUpperCase() + segment.slice(1)
 }
 
 // A single JSON envelope has no separator that can collide with a title.

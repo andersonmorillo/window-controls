@@ -9,7 +9,7 @@ Corner buttons for Omarchy windows. Drag a window from the grip, resize it from 
 - A drag or resize starts after the pointer moves at least four logical pixels. Clicking the resize handle alone does not change the window's layout.
 - Minimized windows use `special:li-window-controls`. Other special workspaces remain independent.
 - Original workspaces are saved outside the plugin directory and restored after plugin reloads or shell restarts. Saved records are checked against live window identities.
-- Controls have no fixed window-count limit. Open windows appear on their monitor's status bar. Titles shrink to fit more windows together, and pages appear when the list still exceeds the available space. Click a title to focus it or restore it to its original workspace. Click its separate square button to maximize it; minimized windows restore before maximizing. The focused window is highlighted. The widget uses the bar's theme and leaves space for the clock and other widgets. Hover a shortened title to read its full name.
+- Controls have no fixed window-count limit. Open windows appear on their monitor's status bar by application name. Names shrink to fit more windows together, and pages appear when the list still exceeds the available space. Click a name to focus that window or restore it to its original workspace. The focused window is highlighted. The widget uses the bar's theme and leaves space for the clock and other widgets. Hover a name to read the window's full title.
 - Button presses retain their original window target. Controls that would obstruct a foreground window are suppressed using the compositor's focus and window-state information.
 - Full-title and action tooltips describe the controls. Compact controls fit smaller windows.
 

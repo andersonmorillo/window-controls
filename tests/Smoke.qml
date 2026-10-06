@@ -174,25 +174,22 @@ ShellRoot {
             label + " omits rendered entry diagnostics");
         var previousRight = 0;
         state.entries.forEach(function(entry) {
-            check(entry.title && entry.maximize && entry.title.w > 0 && entry.maximize.w > 0,
-                label + " loses a title or maximize affordance");
+            check(entry.title && entry.title.w > 0 && !entry.maximize,
+                label + " loses its app name or still reserves a maximize square");
             var title = widget.buttonFor(entry.address);
-            var maximize = widget.maximizeButtonFor(entry.address);
-            [title, maximize].forEach(function(target) {
-                [[0, 0], [target.width, 0], [0, target.height], [target.width, target.height]].forEach(function(corner) {
-                    var point = target.mapToItem(widget, corner[0], corner[1]);
-                    check(point.x >= -0.01 && point.y >= -0.01 && point.x <= widget.width + 0.01 && point.y <= widget.height + 0.01,
-                        label + " clips " + target.objectName + " corner " + JSON.stringify(point)
-                            + " outside " + widget.width + "x" + widget.height
-                            + "; content=" + target.parent.parent.x + "," + target.parent.parent.y
-                            + " " + target.parent.parent.width + "x" + target.parent.parent.height
-                            + "; loader=" + widget.parent.width + "x" + widget.parent.height);
-                });
+            check(title !== null && title.label === "Qa", label + " shows a window title instead of the app name");
+            [[0, 0], [title.width, 0], [0, title.height], [title.width, title.height]].forEach(function(corner) {
+                var point = title.mapToItem(widget, corner[0], corner[1]);
+                check(point.x >= -0.01 && point.y >= -0.01 && point.x <= widget.width + 0.01 && point.y <= widget.height + 0.01,
+                    label + " clips " + title.objectName + " corner " + JSON.stringify(point)
+                        + " outside " + widget.width + "x" + widget.height
+                        + "; content=" + title.parent.parent.x + "," + title.parent.parent.y
+                        + " " + title.parent.parent.width + "x" + title.parent.parent.height
+                        + "; loader=" + widget.parent.width + "x" + widget.parent.height);
             });
             if (!widget.vertical) {
-                check(entry.title.x >= previousRight - 0.01 && entry.maximize.x >= entry.title.x + entry.title.w - 0.01,
-                    label + " overlaps targets");
-                previousRight = entry.maximize.x + entry.maximize.w;
+                check(entry.title.x >= previousRight - 0.01, label + " overlaps targets");
+                previousRight = entry.title.x + entry.title.w;
             }
         });
     }
@@ -433,12 +430,10 @@ ShellRoot {
             check(rendered.length > 0, "bar page renders no restore buttons");
             for (var renderedIndex = 0; renderedIndex < rendered.length; renderedIndex++) {
                 var renderedButton = pagedWidget.buttonFor(rendered[renderedIndex]);
-                var renderedMaximize = pagedWidget.maximizeButtonFor(rendered[renderedIndex]);
-                check(renderedButton !== null && renderedMaximize !== null, "bar entry is missing its title or maximize button");
+                check(renderedButton !== null && renderedButton.label === "Qa", "bar entry is missing its app name");
                 check(renderedButton.activeWindow === (rendered[renderedIndex] === "0x1064"),
                     "rendered bar page shows an incorrect focused-window marker");
                 check(renderedButton.width > 0 && renderedButton.height > 0, "rendered restore button has empty geometry");
-                check(renderedMaximize.width > 0 && renderedMaximize.height > 0, "rendered maximize button has empty geometry");
                 check(renderedButton.x >= 0 && renderedButton.x + renderedButton.width <= pagedWidget.width,
                     "restore button extends past the bar widget");
                 seenBarChips[rendered[renderedIndex]] = true;
@@ -454,7 +449,7 @@ ShellRoot {
                 "native bar restoration models overlap monitors");
             check(panel.barHosted("qa-other"), "second bar did not suppress its fallback");
             check(bridge.widgets.length === 2, "widget registration was duplicated or lost");
-            check(fakeBar.clickTargets.length === 66, "each open window must register title and maximize targets");
+            check(fakeBar.clickTargets.length === 35, "each open window must register one app-name target");
             primaryBarLoader.item.page = 0;
         } else if (phase === 11) {
             pressedBarAddress = primaryBarLoader.item.pageAddress(0);
@@ -488,22 +483,7 @@ ShellRoot {
             check(panel.testCommands.length === 2 && panel.testCommands.every(function(command) {
                 return command.indexOf("hl.dsp.focus(") >= 0;
             }), "normal and inactive-workspace titles must focus their windows");
-            panel.testCommands = [];
-            var normalMaximize = primaryBarLoader.item.maximizeButtonFor("0x1066");
-            check(fakeBar.clickTargets.indexOf(normalMaximize) >= 0, "maximize affordance is not registered with the host");
-            normalMaximize.triggerPress(Qt.LeftButton);
-            normalMaximize.triggerPress(Qt.LeftButton);
-            checkExplicitMaximize("0x1066", 2);
-            check(panel.testCommands.filter(function(command) { return command.indexOf("hl.dsp.focus(") >= 0; }).length === 2,
-                "maximize did not focus the selected normal window");
-            panel.testCommands = [];
-            pressedBarButton = primaryBarLoader.item.maximizeButtonFor("0x1064");
-            pressedBarButton.capturePress();
-            fixtureClient("0x1064").stableId = "replacement-during-maximize-press";
-            load();
         } else if (phase === 15) {
-            pressedBarButton.releasePress(true);
-            check(panel.testCommands.length === 0, "maximize accepted an identity replaced during its press");
             // Remember a real home through the controller before exercising
             // restore confirmation alongside an authoritative focus change.
             fixtureClient("0x1001").workspace = { name: "dev team" };
@@ -520,7 +500,7 @@ ShellRoot {
             check(panel.testCommands.length === 1 && panel.testCommands[0].indexOf('workspace = "dev team"') >= 0
                 && panel.testCommands[0].indexOf("follow = true") >= 0, "minimized title did not restore its original workspace");
             panel.testCommands = [];
-            primaryBarLoader.item.maximizeButtonFor("0x1001").triggerPress(Qt.LeftButton);
+            bridge.maximize("0x1001", windowIdentity("0x1001"));
             check(panel.testCommands.length === 1 && panel.testCommands[0].indexOf('workspace = "dev team"') >= 0,
                 "minimized maximize did not begin by restoring");
             checkExplicitMaximize("0x1001", 0);
@@ -609,7 +589,7 @@ ShellRoot {
             primaryBarLoader.active = false;
         } else if (phase === 24) {
             check(bridge.widgets.length === 1, "destroyed native bar retained its service registration");
-            check(fakeBar.clickTargets.length === 16, "destroyed bar retained host click targets");
+            check(fakeBar.clickTargets.length === 9, "destroyed bar retained host click targets");
             check(!panel.barHosted(screenName) && panel.barHosted("qa-other"), "bar removal did not restore only its own fallback");
             check(JSON.parse(panel.status()).chips.some(function(chip) { return chip.screen === screenName && chip.visible; }),
                 "bar removal left primary minimized windows inaccessible");
@@ -645,8 +625,8 @@ ShellRoot {
                 && sixWindowBar.layout.pages === 1,
                 "default 1600-pixel bar must show all six open-window titles on one page");
             checkBarBounds(sixWindowBar, 1600 * 0.30, "six-window default bar");
-            check(fakeBar.clickTargets.length === 14 && bridge.widgets.length === 1,
-                "density fixture lost title/maximize targets or widget registration");
+            check(fakeBar.clickTargets.length === 8 && bridge.widgets.length === 1,
+                "density fixture lost app-name targets or widget registration");
             data.clients = data.clients.slice(0, 4);
             panel.testScreens = [{ name: screenName, width: 1440, height: 900 }];
             data.monitors[0].width = 1440;
@@ -685,9 +665,6 @@ ShellRoot {
             check(indicatorBar.diagnosticAddresses.length === 4 && indicatorBar.layout.pages === 1,
                 "four entries should fit beside the revealed clock indicators");
             checkBarBounds(indicatorBar, 327, "indicator-clamped host bar");
-            check(indicatorBar.diagnosticAddresses.every(function(address) {
-                return indicatorBar.maximizeButtonFor(address).width === 24;
-            }), "adaptive density unnecessarily shrank the maximize affordance");
             indicatorsSlot.leading = 188;
         } else if (phase === 33) {
             var blockedBar = hostedBarLoader.item;

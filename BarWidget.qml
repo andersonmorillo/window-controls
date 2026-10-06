@@ -152,14 +152,6 @@ Item {
         return null;
     }
 
-    function maximizeButtonFor(address) {
-        for (var i = 0; i < restoreButtons.count; i++) {
-            var entry = restoreButtons.itemAt(i);
-            if (entry && entry.modelData === address) return entry.maximizeButton;
-        }
-        return null;
-    }
-
     function pageAddress(index) {
         return index >= 0 && index < diagnosticAddresses.length ? diagnosticAddresses[index] : "";
     }
@@ -193,7 +185,6 @@ Item {
             var address = diagnosticAddresses[i];
             var metadata = currentMetadataFor(address);
             var title = buttonFor(address);
-            var maximize = maximizeButtonFor(address);
             function targetPosition(target) {
                 if (!target) return null;
                 var local = target.mapToItem(root, 0, 0);
@@ -201,7 +192,7 @@ Item {
             }
             entries.push({ address: address, minimized: !!metadata && metadata.minimized === true,
                 focused: !!metadata && metadata.focused === true, fullscreen: metadata ? metadata.fullscreen : 0,
-                title: targetPosition(title), maximize: targetPosition(maximize) });
+                title: targetPosition(title) });
         }
         return { screen: screenName, x: x, y: y, globalX: point.x, globalY: point.y,
             w: width, h: height, visible: visible, fresh: fresh, vertical: vertical,
@@ -384,11 +375,9 @@ Item {
                 readonly property var metadata: root.metadataFor(modelData)
                 readonly property var placement: root.placementFor(modelData)
                 readonly property var currentMetadata: root.currentMetadataFor(modelData)
-                readonly property real maximizeWidth: Math.min(24, width / 2)
                 readonly property string identity: metadata ? metadata.stableId || "" : ""
                 readonly property bool current: root.fresh && currentMetadata !== null && currentMetadata.stableId === identity
                 property alias titleButton: titleTarget
-                property alias maximizeButton: maximizeTarget
                 objectName: "bar-window:" + modelData
                 visible: placement !== null
                 x: placement ? placement.x : 0
@@ -400,28 +389,15 @@ Item {
                     objectName: "bar-activate:" + windowEntry.modelData
                     targetAddress: windowEntry.modelData
                     targetIdentity: windowEntry.identity
-                    label: windowEntry.metadata ? windowEntry.metadata.title || "Window" : "Window"
-                    help: (windowEntry.metadata && windowEntry.metadata.minimized ? "Restore " : "Focus ") + label
+                    label: windowEntry.metadata ? windowEntry.metadata.app || "Window" : "Window"
+                    help: (windowEntry.metadata && windowEntry.metadata.minimized ? "Restore " : "Focus ")
+                        + (windowEntry.metadata && windowEntry.metadata.title ? windowEntry.metadata.title : label)
                         + (windowEntry.metadata && windowEntry.metadata.class ? " (" + windowEntry.metadata.class + ")" : "")
                         + (windowEntry.metadata && windowEntry.metadata.workspace ? " — " + windowEntry.metadata.workspace : "")
                         + (activeWindow ? " — active" : "")
                     activeWindow: windowEntry.currentMetadata !== null && windowEntry.currentMetadata.focused === true
                     interactive: windowEntry.current
-                    width: windowEntry.width - windowEntry.maximizeWidth
-                    height: windowEntry.height
-                }
-
-                BarButton {
-                    id: maximizeTarget
-                    objectName: "bar-maximize:" + windowEntry.modelData
-                    kind: "maximize"
-                    targetAddress: windowEntry.modelData
-                    targetIdentity: windowEntry.identity
-                    label: "□"
-                    help: "Maximize " + titleTarget.label
-                    interactive: windowEntry.current
-                    x: titleTarget.width
-                    width: windowEntry.maximizeWidth
+                    width: windowEntry.width
                     height: windowEntry.height
                 }
             }

@@ -3,7 +3,7 @@ const path = require("path")
 const assert = require("assert/strict")
 
 const src = fs.readFileSync(path.join(__dirname, "Controls.js"), "utf8").replace(/^\.pragma library\s*/, "")
-const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout }")()
+const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, appName, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout }")()
 
 const visible = { mapped: true, hidden: false, visible: true, at: [324, 38], size: [718, 718] }
 assert.equal(api.showable(visible), true, "visible mapped window")
@@ -24,6 +24,12 @@ assert.equal(api.workspaceName({ workspace: "special:scratchpad" }, true), "spec
 assert.equal(api.safeAddress("0x5a5f88b02ce0"), "0x5a5f88b02ce0")
 assert.equal(api.safeAddress('0x5a5f88b02ce0" })'), "")
 assert.equal(api.windowLabel({ title: " Notes\n文档 ", class: "org.notes" }), "Notes 文档")
+assert.equal(api.appName({ class: "foot", initialClass: "foot", initialTitle: "foot", title: "andersonlabs@omarchy:~" }), "Foot")
+assert.equal(api.appName({ class: "org.omarchy.agent", initialClass: "org.omarchy.agent", initialTitle: "foot", title: "Task | Work" }), "Agent")
+assert.equal(api.appName({ class: "TUI.tile", initialClass: "TUI.tile", title: "foot" }), "TUI")
+assert.equal(api.appName({ class: "brave-localhost__-Default", initialClass: "brave-localhost__-Default", initialTitle: "Testing Hub", title: "Docs — Testing Hub" }), "Testing Hub")
+assert.equal(api.appName({ title: " Notes\n文档 " }), "Notes 文档")
+assert.equal(api.appName({}), "Window")
 assert.equal(api.luaString('Work "quoted" \\ docs'), '"Work \\"quoted\\" \\\\ docs"')
 assert.equal(api.luaString("a\n\r\t\u00001\u001f\u007f"), '"a\\n\\r\\t\\0001\\031\\127"')
 assert.equal(api.luaString("東京"), '"東京"')

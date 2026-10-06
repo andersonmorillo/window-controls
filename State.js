@@ -241,6 +241,7 @@ function metadata(client) {
     class: typeof client.class === "string" ? client.class : "",
     initialClass: identityClass(client),
     title: Controls.windowLabel(client),
+    app: Controls.appName(client),
     pid: clientPid(client),
     compositorId: compositorId(client),
     stableId: stableId(client)
