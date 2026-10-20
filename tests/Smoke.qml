@@ -254,6 +254,14 @@ ShellRoot {
             checkLiteralTooltip(controls[1], controls[1].help);
             var resizeArea = surface.handleFor("0x1000").children[1];
             checkLiteralTooltip(resizeArea, "Resize " + originalCluster.geom.title);
+            check(originalCluster.width === 28 * 4 + 16, "expanded controls are move, minimize, maximize, close, and hide");
+            panel.setChromeExpanded(false);
+            check(panel.rowFor("0x1000").w === 28 && originalCluster.width === 28, "hiding the controls leaves one button");
+            var expand = originalCluster.children[2];
+            check(expand.visible === true && expand.label === "‹", "collapsed cluster offers the show button");
+            checkLiteralTooltip(expand, "Show move, minimize, maximize, and close");
+            panel.setChromeExpanded(true);
+            check(originalCluster.width === 28 * 4 + 16 && originalCluster.children[1].visible === true, "showing the controls restores move, minimize, maximize, and close");
             data.clients.reverse();
             data.clients[14].at = [8, 36];
             load();

@@ -196,6 +196,14 @@ function visibleWindow(client, monitor, screen) {
   return { x: x, y: y, w: size[0], h: size[1], left: left, top: top, right: right, bottom: bottom }
 }
 
+// Expanded chrome is the move, minimize, maximize, and close buttons plus a
+// hide control. Collapsed chrome is one button that shows them again.
+function chromeWidth(buttonSize, expanded, toggle) {
+  var size = positive(buttonSize, 28)
+  var hide = nonnegative(toggle, 16)
+  return expanded === false ? size : size * 4 + hide
+}
+
 function chromeTopLeft(client, monitor, screen, chromeW, inset, chromeH) {
   var win = visibleWindow(client, monitor, screen)
   if (!win) return null

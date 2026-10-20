@@ -12,6 +12,7 @@ Corner buttons for Omarchy windows. Drag a window from the grip, resize it from 
 - Controls have no fixed window-count limit. Open windows appear on their monitor's status bar by application name. Names shrink to fit more windows together, and pages appear when the list still exceeds the available space. Click a name to focus that window or restore it to its original workspace. The focused window is highlighted. The widget uses the bar's theme and leaves space for the clock and other widgets. Hover a name to read the window's full title.
 - Button presses retain their original window target. Controls that would obstruct a foreground window are suppressed using the compositor's focus and window-state information.
 - Full-title and action tooltips describe the controls. Compact controls fit smaller windows.
+- The corner cluster is move, minimize, maximize, and close. The `›` button hides those four icons and leaves one `‹` button; click it to show them again. The choice is saved and restored with the shell.
 
 The overlay does not take keyboard focus. Omarchy's existing window-management shortcuts remain available.
 

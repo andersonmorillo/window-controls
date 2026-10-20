@@ -3,7 +3,7 @@ const path = require("path")
 const assert = require("assert/strict")
 
 const src = fs.readFileSync(path.join(__dirname, "Controls.js"), "utf8").replace(/^\.pragma library\s*/, "")
-const api = new Function(src + "\nreturn { showable, chromeTopLeft, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, appName, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout, tooltipText }")()
+const api = new Function(src + "\nreturn { showable, chromeTopLeft, chromeWidth, snapRect, resizeHandle, onShelf, workspaceName, safeAddress, windowLabel, appName, monitorRect, workArea, monitorAt, parseSnapshot, luaString, shelfLayout, tooltipText }")()
 
 // Foreign titles/classes must remain literal even in Qt's rich-text tooltip.
 assert.equal(api.tooltipText('<img src="http://127.0.0.1:9/probe"> & <b>東京</b>'),
@@ -11,6 +11,9 @@ assert.equal(api.tooltipText('<img src="http://127.0.0.1:9/probe"> & <b>東京</
 assert.equal(api.tooltipText('&lt;img src=x&gt;'), '<qt>&amp;lt;img src=x&amp;gt;</qt>')
 assert.equal(api.tooltipText("line 1\nline 2's"), '<qt>line 1<br>line 2&#39;s</qt>')
 assert.equal(api.tooltipText(null), '<qt></qt>')
+assert.equal(api.chromeWidth(28, true, 16), 128, "expanded controls keep move, minimize, maximize, close, and hide")
+assert.equal(api.chromeWidth(28, false, 16), 28, "collapsed controls are one button")
+assert.equal(api.chromeWidth(0, false, -1), 28, "collapsed width falls back when sizes are invalid")
 for (const file of ["Panel.qml", "ControlButton.qml"]) {
   const qml = fs.readFileSync(path.join(__dirname, file), "utf8")
   const sinks = [...qml.matchAll(/QQC\.ToolTip\.text:\s*(.*)/g)]

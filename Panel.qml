@@ -50,7 +50,9 @@ Item {
     property double lastValidAt: 0
     property double clockNow: Date.now()
     property int buttonSize: 28
-    readonly property int chromeW: buttonSize * 4
+    readonly property int toggleW: 16
+    property bool chromeExpanded: true
+    readonly property int chromeW: Controls.chromeWidth(buttonSize, chromeExpanded, toggleW)
     readonly property int chromeH: buttonSize
     readonly property int inset: 4
     readonly property int grip: 18
@@ -77,9 +79,13 @@ Item {
             Settings {
                 location: "file://" + Quickshell.statePath("li-window-controls.ini")
                 property string homesJson: "{}"
+                property bool chromeExpanded: true
             }
         }
-        onLoaded: if (root.ready) root.loadHomes()
+        onLoaded: {
+            if (diskStore) root.chromeExpanded = diskStore.chromeExpanded;
+            if (root.ready) root.loadHomes();
+        }
     }
 
     function loadHomes() {
@@ -125,7 +131,7 @@ Item {
     }
 
     function status() {
-        return JSON.stringify({ version: "1.4.1", windows: windows.length, minimized: minimized.length,
+        return JSON.stringify({ version: "1.5.0", chromeExpanded: chromeExpanded, windows: windows.length, minimized: minimized.length,
             shelves: shelves, poll: lastPoll, error: lastError,
             barWidgets: sharedService ? sharedService.widgetStatus() : [],
             validAgeMs: lastValidAt ? Math.max(0, Date.now() - lastValidAt) : null,
@@ -319,6 +325,15 @@ Item {
         scheduleRefresh();
     }
 
+    function setChromeExpanded(expanded) {
+        var next = expanded === true;
+        if (!testMode && diskStore && diskStore.chromeExpanded !== next) {
+            diskStore.chromeExpanded = next;
+            diskStore.sync();
+        }
+        chromeExpanded = next;
+    }
+
     function setPage(screenName, delta) {
         var shelf = shelves[screenName];
         if (!shelf) return;
@@ -330,7 +345,7 @@ Item {
 
     function buildState(value) {
         return WindowState.buildSnapshot(value, layoutScreens, homes, {
-            chromeW: chromeW, chromeH: chromeH, inset: inset, grip: grip,
+            chromeW: Controls.chromeWidth(buttonSize, chromeExpanded, toggleW), chromeH: chromeH, inset: inset, grip: grip,
             chipW: 128, chipH: 28, shelfGap: 8, shelfPages: shelfPages,
             focusedAddress: value.activeWindow !== undefined ? nativeAddress(value.activeWindow.address) : nativeFocusedAddress
         });
@@ -489,6 +504,7 @@ Item {
         return row.screenName === screenName ? row : emptyGeom;
     }
 
+    onChromeExpandedChanged: if (ready) rebuild()
     onNativeFocusedAddressChanged: if (ready && (!snapshot || snapshot.activeWindow === undefined)) rebuild()
     onSharedServiceChanged: connectService()
     onHostedScreensChanged: Qt.callLater(poke)
@@ -706,9 +722,10 @@ Item {
                         }
                         Row {
                             anchors.fill: parent
+                            visible: root.chromeExpanded
                             Item {
                                 id: moveGrip
-                                width: cluster.width / 4
+                                width: Math.max(0, (cluster.width - root.toggleW) / 4)
                                 height: cluster.height
                                 Accessible.role: Accessible.Grip
                                 Accessible.name: "Move " + cluster.description
@@ -736,24 +753,37 @@ Item {
                                 }
                             }
                             ControlButton {
-                                width: cluster.width / 4; height: cluster.height
+                                width: Math.max(0, (cluster.width - root.toggleW) / 4); height: cluster.height
                                 label: "—"; help: "Minimize " + cluster.description
                                 targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
                                 onActivated: function(address, identity) { root.action(address, identity, "minimize"); }
                             }
                             ControlButton {
-                                width: cluster.width / 4; height: cluster.height
+                                width: Math.max(0, (cluster.width - root.toggleW) / 4); height: cluster.height
                                 label: cluster.geom.fullscreen ? "❐" : "□"
                                 help: (cluster.geom.fullscreen ? "Restore size of " : "Maximize ") + cluster.description
                                 targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
                                 onActivated: function(address, identity) { root.action(address, identity, "maximize"); }
                             }
                             ControlButton {
-                                width: cluster.width / 4; height: cluster.height
+                                width: Math.max(0, (cluster.width - root.toggleW) / 4); height: cluster.height
                                 label: "×"; help: "Close " + cluster.description; destructive: true
                                 targetAddress: cluster.modelData; targetIdentity: cluster.geom.stableId || ""
                                 onActivated: function(address, identity) { root.action(address, identity, "close"); }
                             }
+                            ControlButton {
+                                width: root.toggleW; height: cluster.height
+                                label: "›"
+                                help: "Hide move, minimize, maximize, and close"
+                                onActivated: root.setChromeExpanded(false)
+                            }
+                        }
+                        ControlButton {
+                            anchors.fill: parent
+                            visible: !root.chromeExpanded
+                            label: "‹"
+                            help: "Show move, minimize, maximize, and close"
+                            onActivated: root.setChromeExpanded(true)
                         }
                     }
                 }
